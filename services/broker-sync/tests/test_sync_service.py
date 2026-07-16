@@ -206,8 +206,39 @@ async def test_sync_connection_keeps_stale_data_on_decrypt_failure(monkeypatch, 
     assert connection_updates[0].values["last_error"] == "Could not decrypt stored credentials."
 
 
-async def test_sync_connection_skips_unregistered_broker(fake_supabase, fake_cache):
+async def test_sync_connection_routes_binance_connections_to_binance_client(
+    monkeypatch, fake_supabase, fake_cache
+):
+    position = Position(
+        symbol="BTCUSDT",
+        side="long",
+        size=0.5,
+        entry_price=60000,
+        mark_price=61200,
+        broker_source=BrokerType.BINANCE,
+    )
+    monkeypatch.setitem(
+        sync_service.BROKER_CLIENTS, BrokerType.BINANCE, make_fake_client(positions=[position])
+    )
     connection = {**CONNECTION, "broker": "binance"}
+    fake_supabase.select_responses[("positions", "id, symbol, side")] = []
+    fake_supabase.select_responses[("portfolio_snapshots", "id")] = [{"id": "already-exists"}]
+
+    await sync_service.sync_connection(connection)
+
+    upserts = fake_supabase.calls_for("positions", "upsert")
+    assert len(upserts) == 1
+    assert upserts[0].rows[0]["symbol"] == "BTCUSDT"
+
+    connection_updates = fake_supabase.calls_for("broker_connections", "update")
+    assert connection_updates[0].values["sync_status"] == "connected"
+
+
+async def test_sync_connection_skips_unregistered_broker(fake_supabase, fake_cache):
+    # 'kucoin' is a valid BrokerType member but has no BROKER_CLIENTS entry
+    # yet — the branch this test targets is distinct from an unknown-string
+    # broker (covered by test_sync_connection_skips_unknown_broker_string).
+    connection = {**CONNECTION, "broker": "kucoin"}
 
     await sync_service.sync_connection(connection)
 

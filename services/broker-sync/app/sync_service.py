@@ -4,6 +4,7 @@ from datetime import date, datetime, timezone
 from typing import Type
 
 from .brokers.base import BrokerClient
+from .brokers.binance import BinanceClient
 from .brokers.bybit import BybitClient
 from .encryption import decrypt
 from .financial import calculate_position_value
@@ -21,6 +22,7 @@ logger = logging.getLogger("broker_sync")
 # that silently never matches any connection.
 BROKER_CLIENTS: dict[BrokerType, Type[BrokerClient]] = {
     BrokerType.BYBIT: BybitClient,
+    BrokerType.BINANCE: BinanceClient,
 }
 
 CRYPTO_BROKERS = {BrokerType.BYBIT, BrokerType.BINANCE, BrokerType.KUCOIN}
