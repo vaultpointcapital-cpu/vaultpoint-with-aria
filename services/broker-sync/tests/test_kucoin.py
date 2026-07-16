@@ -36,6 +36,10 @@ def position_row(**overrides) -> dict:
     return row
 
 
+def contract_row(symbol: str = "XBTUSDTM", multiplier: float = 1.0) -> dict:
+    return {"symbol": symbol, "multiplier": multiplier}
+
+
 def assert_signed_headers(request: httpx.Request, expect_endpoint: str) -> None:
     timestamp = request.headers["KC-API-TIMESTAMP"]
     expected_sign = base64.b64encode(
@@ -51,6 +55,24 @@ def assert_signed_headers(request: httpx.Request, expect_endpoint: str) -> None:
     assert request.headers["KC-API-SIGN"] == expected_sign
     assert request.headers["KC-API-PASSPHRASE"] == expected_passphrase
     assert request.headers["KC-API-KEY-VERSION"] == "2"
+
+
+def make_positions_handler(position_rows: list[dict], contract_rows: list[dict]):
+    """Routes by path: signed GET /api/v1/positions returns position_rows,
+    public GET /api/v1/contracts/active (no signing headers) returns
+    contract_rows.
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v1/positions":
+            assert_signed_headers(request, "/api/v1/positions")
+            return httpx.Response(200, json=ok_response(position_rows))
+        if request.url.path == "/api/v1/contracts/active":
+            assert "KC-API-SIGN" not in request.headers
+            return httpx.Response(200, json=ok_response(contract_rows))
+        raise AssertionError(f"unexpected path in test: {request.url.path}")
+
+    return handler
 
 
 def test_requires_passphrase_at_construction():
@@ -73,18 +95,13 @@ def test_sign_matches_kucoin_hmac_scheme():
 
 
 async def test_get_positions_skips_zero_qty_rows():
-    def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.path == "/api/v1/positions"
-        assert_signed_headers(request, "/api/v1/positions")
-        return httpx.Response(
-            200,
-            json=ok_response(
-                [
-                    position_row(symbol="ETHUSDTM", currentQty=0),
-                    position_row(symbol="XBTUSDTM", currentQty=1),
-                ]
-            ),
-        )
+    handler = make_positions_handler(
+        position_rows=[
+            position_row(symbol="ETHUSDTM", currentQty=0),
+            position_row(symbol="XBTUSDTM", currentQty=1),
+        ],
+        contract_rows=[contract_row(symbol="XBTUSDTM", multiplier=1.0)],
+    )
 
     client = make_client(handler)
     positions = await client.get_positions()
@@ -104,14 +121,60 @@ async def test_get_positions_skips_zero_qty_rows():
 
 
 async def test_get_positions_uses_sign_of_current_qty_for_side():
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json=ok_response([position_row(currentQty=-3)]))
+    handler = make_positions_handler(
+        position_rows=[position_row(currentQty=-3)],
+        contract_rows=[contract_row(symbol="XBTUSDTM", multiplier=1.0)],
+    )
 
     client = make_client(handler)
     positions = await client.get_positions()
 
     assert positions[0].side == "short"
     assert positions[0].size == 3
+
+
+async def test_get_positions_converts_contract_count_using_multiplier():
+    handler = make_positions_handler(
+        position_rows=[position_row(symbol="XBTUSDTM", currentQty=4)],
+        contract_rows=[contract_row(symbol="XBTUSDTM", multiplier=0.001)],
+    )
+
+    client = make_client(handler)
+    positions = await client.get_positions()
+
+    # 4 contracts * 0.001 BTC/contract = 0.004 BTC, not 4 contracts.
+    assert positions[0].size == pytest.approx(0.004)
+
+
+async def test_get_positions_falls_back_to_raw_count_when_multiplier_missing():
+    handler = make_positions_handler(
+        position_rows=[position_row(symbol="NEWUSDTM", currentQty=2)],
+        # NEWUSDTM isn't in the active-contracts list.
+        contract_rows=[contract_row(symbol="XBTUSDTM", multiplier=0.001)],
+    )
+
+    client = make_client(handler)
+    positions = await client.get_positions()
+
+    assert positions[0].size == 2
+
+
+async def test_get_positions_skips_fetching_multipliers_when_nothing_open():
+    calls = {"contracts_active": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v1/positions":
+            return httpx.Response(200, json=ok_response([position_row(currentQty=0)]))
+        if request.url.path == "/api/v1/contracts/active":
+            calls["contracts_active"] += 1
+            return httpx.Response(200, json=ok_response([]))
+        raise AssertionError(f"unexpected path in test: {request.url.path}")
+
+    client = make_client(handler)
+    positions = await client.get_positions()
+
+    assert positions == []
+    assert calls["contracts_active"] == 0
 
 
 async def test_get_balance_returns_account_equity():

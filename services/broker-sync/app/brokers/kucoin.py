@@ -2,6 +2,7 @@ import asyncio
 import base64
 import hashlib
 import hmac
+import logging
 import time
 from typing import Optional
 
@@ -17,20 +18,22 @@ KUCOIN_BASE_URL = "https://api-futures.kucoin.com"
 MAX_RETRIES = 5
 API_KEY_VERSION = "2"  # v2 keys require the passphrase itself to be HMAC-signed
 
+logger = logging.getLogger("broker_sync")
+
 
 class KucoinClient(BrokerClient):
     """KuCoin Futures REST, read-only. Positions from GET /api/v1/positions,
     account equity from GET /api/v1/account-overview.
 
-    Known gap: KuCoin reports position size in contracts (`currentQty`),
-    not underlying-asset quantity — converting requires each symbol's
-    multiplier from GET /api/v1/contracts/active, which this client
-    doesn't fetch yet. `size` below is therefore contract count, and
-    anything downstream that multiplies size by price (e.g.
-    calculate_position_value for portfolio_snapshots) will be wrong for
-    KuCoin rows until that's added. unrealized_pnl/unrealized_pnl_pct
-    sidestep this by using KuCoin's own computed values instead of this
-    service's calculate_position_pnl.
+    KuCoin reports position size as `currentQty` — a contract count, not
+    underlying-asset quantity. get_positions() converts it using each
+    symbol's multiplier from the public GET /api/v1/contracts/active
+    endpoint (e.g. XBTUSDTM's multiplier of 0.001 means 1 contract =
+    0.001 BTC), so `size` ends up in the same units Bybit/Binance report
+    it in and calculate_position_value's size * price is correct for
+    KuCoin rows too. Scoped to linear (USDT-margined) contracts, same as
+    the Bybit/Binance clients — inverse/coin-margined contracts (where
+    price and size relate differently) aren't handled.
     """
 
     def __init__(self, api_key: str, api_secret: str, api_passphrase: Optional[str] = None):
@@ -57,21 +60,23 @@ class KucoinClient(BrokerClient):
         ).digest()
         return base64.b64encode(digest).decode("utf-8")
 
-    async def _get(self, path: str, params: Optional[dict] = None) -> dict | list:
+    async def _request(self, path: str, params: Optional[dict] = None, signed: bool = True) -> dict | list:
         query_string = ""
         if params:
             query_string = "?" + "&".join(f"{k}={v}" for k, v in params.items())
         endpoint = f"{path}{query_string}"
 
         for attempt in range(MAX_RETRIES):
-            timestamp = str(int(time.time() * 1000))
-            headers = {
-                "KC-API-KEY": self.api_key,
-                "KC-API-SIGN": self._sign(timestamp, "GET", endpoint),
-                "KC-API-TIMESTAMP": timestamp,
-                "KC-API-PASSPHRASE": self._sign_passphrase(),
-                "KC-API-KEY-VERSION": API_KEY_VERSION,
-            }
+            headers = {}
+            if signed:
+                timestamp = str(int(time.time() * 1000))
+                headers = {
+                    "KC-API-KEY": self.api_key,
+                    "KC-API-SIGN": self._sign(timestamp, "GET", endpoint),
+                    "KC-API-TIMESTAMP": timestamp,
+                    "KC-API-PASSPHRASE": self._sign_passphrase(),
+                    "KC-API-KEY-VERSION": API_KEY_VERSION,
+                }
 
             response = await self._client.get(endpoint, headers=headers)
 
@@ -88,23 +93,53 @@ class KucoinClient(BrokerClient):
 
         raise RuntimeError("KuCoin API rate limit exceeded after retries.")
 
+    async def _get(self, path: str, params: Optional[dict] = None) -> dict | list:
+        return await self._request(path, params, signed=True)
+
+    async def _get_contract_multipliers(self) -> dict[str, float]:
+        """GET /api/v1/contracts/active is public — signed here anyway
+        would just be wasted work, KuCoin doesn't require auth for it.
+        Fetched fresh per get_positions() call (a client's lifetime is
+        one sync_connection call, so there's nothing longer-lived to
+        cache it on) rather than hardcoded, since multipliers are set
+        per-contract and do change.
+        """
+        rows = await self._request("/api/v1/contracts/active", signed=False)
+        return {row["symbol"]: float(row["multiplier"]) for row in rows}
+
     async def get_positions(self) -> list[Position]:
         rows = await self._get("/api/v1/positions")
+        open_rows = [row for row in rows if float(row["currentQty"]) != 0]
+        if not open_rows:
+            return []
+
+        multipliers = await self._get_contract_multipliers()
 
         positions: list[Position] = []
-        for row in rows:
+        for row in open_rows:
             current_qty = float(row["currentQty"])
-            if current_qty == 0:
-                continue  # no open position on this symbol
+            symbol = row["symbol"]
+
+            multiplier = multipliers.get(symbol)
+            if multiplier is None:
+                # Contract not in the active list (delisted mid-position?)
+                # — report contract count rather than dropping the
+                # position outright, but make the discrepancy loud.
+                logger.warning(
+                    "No contract multiplier found for KuCoin symbol=%s — "
+                    "reporting raw contract count as size.",
+                    symbol,
+                )
+                multiplier = 1.0
 
             side = "long" if current_qty > 0 else "short"
             mark_price = float(row["markPrice"]) if row.get("markPrice") else None
 
             positions.append(
                 Position(
-                    symbol=row["symbol"],
+                    symbol=symbol,
                     side=side,
-                    size=abs(current_qty),  # contracts, not underlying quantity — see class docstring
+                    size=abs(current_qty) * multiplier,
                     entry_price=float(row["avgEntryPrice"]),
                     mark_price=mark_price,
                     leverage=float(row["realLeverage"]) if row.get("realLeverage") else 1,
