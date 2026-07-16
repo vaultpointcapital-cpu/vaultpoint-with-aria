@@ -4,7 +4,7 @@ import hmac
 import httpx
 import pytest
 
-from app.brokers.bybit import BybitClient, RECV_WINDOW
+from app.brokers.bybit import RECV_WINDOW, BybitClient
 
 
 def make_client(handler) -> BybitClient:

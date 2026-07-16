@@ -1,7 +1,6 @@
 import asyncio
 import logging
 import uuid
-from typing import Optional
 
 import httpx
 
@@ -52,8 +51,8 @@ class MetaTraderClient(BrokerClient):
         server: str,
         platform: str,
         metaapi_token: str,
-        account_id: Optional[str] = None,
-        region: Optional[str] = None,
+        account_id: str | None = None,
+        region: str | None = None,
     ):
         self.login = login
         self.password = password

@@ -6,6 +6,9 @@ Python decrypt() is byte-for-byte compatible with what the Next.js app
 actually writes to broker_connections.
 """
 
+import pytest
+from cryptography.exceptions import InvalidTag
+
 from app.encryption import decrypt
 
 FIXTURE_KEY_HEX = "a" * 64
@@ -31,8 +34,5 @@ def test_decrypt_raises_on_tampered_ciphertext(monkeypatch):
     monkeypatch.setattr("app.encryption.settings", Settings())
 
     tampered = "0" + FIXTURE_CIPHERTEXT_HEX[1:]
-    try:
+    with pytest.raises(InvalidTag):
         decrypt(tampered, FIXTURE_IV_HEX)
-        assert False, "expected decrypt to raise on a tampered ciphertext"
-    except Exception:
-        pass

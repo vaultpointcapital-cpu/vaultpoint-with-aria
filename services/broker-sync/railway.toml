@@ -1,0 +1,21 @@
+# Railway config-as-code for the broker-sync service. Lives alongside
+# the Dockerfile — set this service's "Root Directory" to
+# services/broker-sync in the Railway dashboard for a monorepo deploy
+# (config-as-code doesn't set that itself; see RUNBOOK.md).
+
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+healthcheckPath = "/health"
+healthcheckTimeout = 300
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 3
+# Pinned to 1, not just as a default — the APScheduler poll lock (see
+# app/redis_cache.py's acquire_poll_lock) tolerates a brief second
+# instance during a deploy's overlap window, but steady-state running
+# more than one replica would mean N instances all racing for the same
+# lock every cycle for no benefit, since this service does one thing
+# (poll on a timer) that doesn't parallelize across replicas.
+numReplicas = 1

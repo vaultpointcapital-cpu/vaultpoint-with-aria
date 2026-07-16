@@ -1,5 +1,5 @@
 from enum import Enum
-from typing import Literal, Optional
+from typing import Literal
 
 from pydantic import BaseModel
 
@@ -32,9 +32,9 @@ class Position(BaseModel):
     side: PositionSide
     size: float
     entry_price: float
-    mark_price: Optional[float] = None
+    mark_price: float | None = None
     leverage: float = 1
-    unrealized_pnl: Optional[float] = None
-    unrealized_pnl_pct: Optional[float] = None
-    margin_used: Optional[float] = None
+    unrealized_pnl: float | None = None
+    unrealized_pnl_pct: float | None = None
+    margin_used: float | None = None
     broker_source: BrokerType

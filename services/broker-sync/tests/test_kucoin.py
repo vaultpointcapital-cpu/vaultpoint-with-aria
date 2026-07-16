@@ -44,7 +44,7 @@ def assert_signed_headers(request: httpx.Request, expect_endpoint: str) -> None:
     timestamp = request.headers["KC-API-TIMESTAMP"]
     expected_sign = base64.b64encode(
         hmac.new(
-            b"test-secret", f"{timestamp}GET{expect_endpoint}".encode("utf-8"), hashlib.sha256
+            b"test-secret", f"{timestamp}GET{expect_endpoint}".encode(), hashlib.sha256
         ).digest()
     ).decode("utf-8")
     expected_passphrase = base64.b64encode(
@@ -88,7 +88,7 @@ def test_sign_matches_kucoin_hmac_scheme():
     timestamp = "1700000000000"
 
     expected = base64.b64encode(
-        hmac.new(b"test-secret", f"{timestamp}GET/api/v1/positions".encode("utf-8"), hashlib.sha256).digest()
+        hmac.new(b"test-secret", f"{timestamp}GET/api/v1/positions".encode(), hashlib.sha256).digest()
     ).decode("utf-8")
 
     assert client._sign(timestamp, "GET", "/api/v1/positions") == expected

@@ -6,7 +6,6 @@ this module is that translation. Keep it byte-for-byte equivalent to the
 TS version; if one changes, the other must change with it.
 """
 
-from typing import Optional
 
 PositionSide = str  # 'long' | 'short' | 'buy' | 'sell'
 
@@ -30,7 +29,7 @@ def calculate_position_pnl_pct(
 
 
 def calculate_position_value(
-    mark_price: Optional[float], entry_price: float, size: float
+    mark_price: float | None, entry_price: float, size: float
 ) -> float:
     price = mark_price if mark_price is not None else entry_price
     return abs(size) * price

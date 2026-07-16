@@ -1,0 +1,47 @@
+name: broker-sync CI
+
+# Path-filtered to services/broker-sync only — a Next.js-only change
+# shouldn't spin up Python + install every dependency here, same as
+# nextjs-ci.yml stays out of Python-only changes.
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - "services/broker-sync/**"
+      - ".github/workflows/broker-sync-ci.yml"
+  pull_request:
+    paths:
+      - "services/broker-sync/**"
+      - ".github/workflows/broker-sync-ci.yml"
+
+defaults:
+  run:
+    working-directory: services/broker-sync
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: services/broker-sync/requirements.txt
+
+      - run: pip install -r requirements.txt
+
+      - run: ruff check app/ tests/ scripts/
+
+      # Dummy values — no real Supabase/Redis/MetaApi credentials needed,
+      # every test mocks the network boundary (see tests/conftest.py's
+      # FakeSupabase and the per-broker httpx.MockTransport fixtures).
+      - run: pytest -v
+        env:
+          SUPABASE_URL: https://placeholder.supabase.co
+          SUPABASE_SERVICE_ROLE_KEY: placeholder-service-key
+          ENCRYPTION_KEY: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          UPSTASH_REDIS_REST_URL: https://placeholder.upstash.io
+          UPSTASH_REDIS_REST_TOKEN: placeholder-token
+          PYTHON_SERVICE_API_KEY: placeholder-key

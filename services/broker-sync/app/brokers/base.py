@@ -1,5 +1,4 @@
 from abc import ABC, abstractmethod
-from typing import Optional
 
 from ..models import Position
 
@@ -18,7 +17,7 @@ class BrokerClient(ABC):
     broker name.
     """
 
-    def __init__(self, api_key: str, api_secret: str, api_passphrase: Optional[str] = None):
+    def __init__(self, api_key: str, api_secret: str, api_passphrase: str | None = None):
         self.api_key = api_key
         self.api_secret = api_secret
         self.api_passphrase = api_passphrase

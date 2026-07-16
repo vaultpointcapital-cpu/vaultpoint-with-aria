@@ -4,7 +4,6 @@ import hashlib
 import hmac
 import logging
 import time
-from typing import Optional
 
 import httpx
 
@@ -36,7 +35,7 @@ class KucoinClient(BrokerClient):
     price and size relate differently) aren't handled.
     """
 
-    def __init__(self, api_key: str, api_secret: str, api_passphrase: Optional[str] = None):
+    def __init__(self, api_key: str, api_secret: str, api_passphrase: str | None = None):
         super().__init__(api_key, api_secret, api_passphrase)
         if not api_passphrase:
             raise ValueError(
@@ -60,7 +59,7 @@ class KucoinClient(BrokerClient):
         ).digest()
         return base64.b64encode(digest).decode("utf-8")
 
-    async def _request(self, path: str, params: Optional[dict] = None, signed: bool = True) -> dict | list:
+    async def _request(self, path: str, params: dict | None = None, signed: bool = True) -> dict | list:
         query_string = ""
         if params:
             query_string = "?" + "&".join(f"{k}={v}" for k, v in params.items())
@@ -93,7 +92,7 @@ class KucoinClient(BrokerClient):
 
         raise RuntimeError("KuCoin API rate limit exceeded after retries.")
 
-    async def _get(self, path: str, params: Optional[dict] = None) -> dict | list:
+    async def _get(self, path: str, params: dict | None = None) -> dict | list:
         return await self._request(path, params, signed=True)
 
     async def _get_contract_multipliers(self) -> dict[str, float]:

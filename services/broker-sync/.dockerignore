@@ -1,0 +1,16 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+tests/
+
+# env files - NEVER bake these into an image
+.env
+.env.*.local
+.env.example
+
+.git/
+.gitignore
+.dockerignore
+Dockerfile
+RUNBOOK.md

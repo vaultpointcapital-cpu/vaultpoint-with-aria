@@ -1,4 +1,3 @@
-from typing import Optional
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -25,7 +24,12 @@ class Settings(BaseSettings):
     # metatrader broker_connections row exists; optional so the service
     # still starts cleanly for deployments that haven't enabled
     # MetaTrader support yet.
-    metaapi_token: Optional[str] = None
+    metaapi_token: str | None = None
+
+    # Optional — error reporting is disabled entirely (not degraded) when
+    # unset, so local dev and any deployment that hasn't set up Sentry
+    # yet doesn't need a dummy value.
+    sentry_dsn: str | None = None
 
     poll_interval_seconds: int = 60
     cache_ttl_seconds: int = 55

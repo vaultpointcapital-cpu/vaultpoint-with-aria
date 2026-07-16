@@ -1,12 +1,14 @@
 import asyncio
 import logging
+import os
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.responses import JSONResponse
 
 from .config import settings
+from .observability import init_sentry
 from .rate_limiter import check_and_set_rate_limit
 from .redis_cache import get_last_poll_heartbeat, get_redis
 from .scheduler import scheduler, start_scheduler
@@ -15,6 +17,11 @@ from .sync_service import sync_connection
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("broker_sync")
+
+# As early as possible — before the FastAPI app is even constructed — so
+# a failure during construction itself is still captured, not just
+# exceptions raised after startup.
+init_sentry()
 
 
 @asynccontextmanager
@@ -68,19 +75,39 @@ async def health():
         checks["redis"] = f"error: {exc}"
         healthy = False
 
-    last_poll = await get_last_poll_heartbeat()
-    checks["last_successful_poll"] = last_poll
-    if last_poll is None:
+    try:
+        last_poll = await get_last_poll_heartbeat()
+    except Exception as exc:
+        # Same Redis instance as the ping() above, but a distinct failure
+        # mode (e.g. ping succeeds, GET fails, or vice versa under partial
+        # outages) — checked independently so one doesn't mask the other,
+        # and so this can't crash the endpoint into a raw 500 the way an
+        # unhandled exception here did before this was wrapped.
+        checks["last_successful_poll"] = f"error: {exc}"
         healthy = False
     else:
-        age_seconds = (datetime.now(timezone.utc) - datetime.fromisoformat(last_poll)).total_seconds()
-        if age_seconds > settings.poll_interval_seconds * POLL_STALE_MULTIPLIER:
-            checks["last_successful_poll_stale"] = True
+        checks["last_successful_poll"] = last_poll
+        if last_poll is None:
             healthy = False
+        else:
+            age_seconds = (
+                datetime.now(UTC) - datetime.fromisoformat(last_poll)
+            ).total_seconds()
+            if age_seconds > settings.poll_interval_seconds * POLL_STALE_MULTIPLIER:
+                checks["last_successful_poll_stale"] = True
+                healthy = False
 
     return JSONResponse(
         status_code=200 if healthy else 503,
-        content={"status": "ok" if healthy else "degraded", "checks": checks},
+        content={
+            "status": "ok" if healthy else "degraded",
+            # Railway sets this automatically for GitHub-triggered deploys
+            # (see https://docs.railway.com/variables/reference) — not
+            # present when running locally/outside Railway, hence the
+            # fallback rather than a hard requirement.
+            "version": os.environ.get("RAILWAY_GIT_COMMIT_SHA", "unknown"),
+            "checks": checks,
+        },
     )
 
 

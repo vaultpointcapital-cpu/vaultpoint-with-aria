@@ -1,7 +1,6 @@
 import asyncio
 import logging
-from datetime import date, datetime, timezone
-from typing import Optional, Type
+from datetime import UTC, date, datetime
 
 from .brokers.base import BrokerClient
 from .brokers.binance import BinanceClient
@@ -27,7 +26,7 @@ logger = logging.getLogger("broker_sync")
 # others don't. Keys are BrokerType members, not raw strings, so a
 # typo'd broker name is an AttributeError at import time, not a client
 # that silently never matches any connection.
-BROKER_CLIENTS: dict[BrokerType, Type[BrokerClient]] = {
+BROKER_CLIENTS: dict[BrokerType, type[BrokerClient]] = {
     BrokerType.BYBIT: BybitClient,
     BrokerType.BINANCE: BinanceClient,
     BrokerType.KUCOIN: KucoinClient,
@@ -111,7 +110,7 @@ async def sync_connection(connection: dict) -> None:
         .update(
             {
                 "sync_status": "connected",
-                "last_synced_at": datetime.now(timezone.utc).isoformat(),
+                "last_synced_at": datetime.now(UTC).isoformat(),
                 "last_error": None,
             }
         )
@@ -123,8 +122,8 @@ async def sync_connection(connection: dict) -> None:
 
 
 async def _build_signed_client(
-    supabase, client_cls: Type[BrokerClient], connection: dict
-) -> Optional[BrokerClient]:
+    supabase, client_cls: type[BrokerClient], connection: dict
+) -> BrokerClient | None:
     """Bybit/Binance/KuCoin all authenticate the same way: decrypt
     api_key/api_secret(/api_passphrase), construct the client. Returns
     None (with the row already marked as errored) on any failure.
@@ -155,7 +154,7 @@ async def _build_signed_client(
         return None
 
 
-async def _build_metatrader_client(supabase, connection: dict) -> Optional[MetaTraderClient]:
+async def _build_metatrader_client(supabase, connection: dict) -> MetaTraderClient | None:
     """MetaTrader needs the service-level METAAPI_TOKEN plus a decrypted
     MT password, and — unlike the other three — a lazily-provisioned
     MetaApi cloud terminal before it can serve any data at all. On a

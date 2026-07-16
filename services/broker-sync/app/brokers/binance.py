@@ -2,7 +2,6 @@ import asyncio
 import hashlib
 import hmac
 import time
-from typing import Optional
 from urllib.parse import urlencode
 
 import httpx
@@ -26,7 +25,7 @@ class BinanceClient(BrokerClient):
     /fapi/v2/positionRisk, account equity from /fapi/v2/account.
     """
 
-    def __init__(self, api_key: str, api_secret: str, api_passphrase: Optional[str] = None):
+    def __init__(self, api_key: str, api_secret: str, api_passphrase: str | None = None):
         super().__init__(api_key, api_secret, api_passphrase)
         self._client = httpx.AsyncClient(base_url=BINANCE_BASE_URL, timeout=10.0)
 
