@@ -18,7 +18,19 @@ export type PaymentProvider = 'stripe' | 'paystack' | 'flutterwave';
 export type SubscriptionStatus = 'active' | 'past_due' | 'cancelled' | 'trialing';
 export type MtPlatform = 'mt4' | 'mt5';
 
-export interface User {
+// Every domain model below is a `type` alias, not an `interface` — a real
+// TypeScript quirk, not a style choice: interfaces don't get an implicit
+// index signature, so they fail `extends Record<string, unknown>` in
+// conditional-type checks even though a structurally identical `type`
+// literal passes. @supabase/supabase-js's SupabaseClient defaults its
+// Schema type param via exactly that kind of conditional check against
+// GenericTable's `Row: Record<string, unknown>` — so as interfaces, every
+// Row/Insert/Update below silently failed it, and Schema fell back to
+// `never` for the whole app. Confirmed via isolated repro before fixing:
+// `interface X {a:string} extends Record<string,unknown>` -> false,
+// `type X = {a:string} extends Record<string,unknown>` -> true.
+
+export type User = {
   id: string;
   full_name: string | null;
   country_code: string | null;
@@ -27,9 +39,9 @@ export interface User {
   onboarding_completed: boolean;
   created_at: string;
   updated_at: string;
-}
+};
 
-export interface BrokerConnection {
+export type BrokerConnection = {
   id: string;
   user_id: string;
   broker: BrokerType;
@@ -58,9 +70,9 @@ export interface BrokerConnection {
   last_error: string | null;
   created_at: string;
   updated_at: string;
-}
+};
 
-export interface Position {
+export type Position = {
   id: string;
   user_id: string;
   broker_connection_id: string;
@@ -75,9 +87,9 @@ export interface Position {
   margin_used: number | null;
   opened_at: string | null;
   synced_at: string;
-}
+};
 
-export interface PortfolioSnapshot {
+export type PortfolioSnapshot = {
   id: string;
   user_id: string;
   total_net_worth: number;
@@ -86,9 +98,9 @@ export interface PortfolioSnapshot {
   manual_assets_value: number;
   snapshot_date: string;
   created_at: string;
-}
+};
 
-export interface ManualAsset {
+export type ManualAsset = {
   id: string;
   user_id: string;
   label: string;
@@ -97,9 +109,9 @@ export interface ManualAsset {
   currency: string;
   created_at: string;
   updated_at: string;
-}
+};
 
-export interface SavingsPod {
+export type SavingsPod = {
   id: string;
   user_id: string;
   name: string;
@@ -111,18 +123,18 @@ export interface SavingsPod {
   status: PodStatus;
   created_at: string;
   updated_at: string;
-}
+};
 
-export interface PodContribution {
+export type PodContribution = {
   id: string;
   pod_id: string;
   user_id: string;
   amount: number;
   note: string | null;
   created_at: string;
-}
+};
 
-export interface Alert {
+export type Alert = {
   id: string;
   user_id: string;
   symbol: string | null;
@@ -131,9 +143,9 @@ export interface Alert {
   threshold: number;
   is_active: boolean;
   created_at: string;
-}
+};
 
-export interface AlertHistoryEntry {
+export type AlertHistoryEntry = {
   id: string;
   alert_id: string;
   user_id: string;
@@ -141,9 +153,9 @@ export interface AlertHistoryEntry {
   message: string;
   delivered_via: string[];
   created_at: string;
-}
+};
 
-export interface Subscription {
+export type Subscription = {
   id: string;
   user_id: string;
   payment_provider: PaymentProvider;
@@ -153,11 +165,22 @@ export interface Subscription {
   current_period_end: string | null;
   created_at: string;
   updated_at: string;
-}
+};
 
 // ----------------------------------------------------------------------------
 // Supabase Database type — used to type the Supabase client generically.
 // Mirrors the shape `supabase gen types typescript` would produce.
+//
+// Every table entry needs a Relationships array, and the schema needs
+// Views/Functions keys, even when empty — @supabase/postgrest-js's
+// GenericSchema constraint requires all of them structurally. Without
+// them, `Database['public']` silently fails `extends GenericSchema` and
+// every `.from()`/`.select()`/`.rpc()` call's return type collapses to
+// `never` throughout the app (that was the root cause of the widespread
+// "Property does not exist on type never" errors — not a bug in any
+// individual route, but this file not satisfying the type this repo's
+// installed @supabase/supabase-js version (^2.45.4, resolved to 2.110.x)
+// actually requires).
 // ----------------------------------------------------------------------------
 export interface Database {
   public: {
@@ -166,26 +189,57 @@ export interface Database {
         Row: User;
         Insert: Partial<User> & { id: string };
         Update: Partial<User>;
+        Relationships: [];
       };
       broker_connections: {
         Row: BrokerConnection;
-        Insert: Omit<BrokerConnection, 'id' | 'created_at' | 'updated_at'>;
+        // metaapi_account_id/region are set later by the Python poller
+        // (see supabase/migrations/20260716000001_add_metatrader_support.sql),
+        // last_synced_at/last_error start null — none of the four are set
+        // by the Next.js connection-creation route.
+        Insert: Omit<
+          BrokerConnection,
+          'id' | 'created_at' | 'updated_at' | 'metaapi_account_id' | 'metaapi_region' | 'last_synced_at' | 'last_error'
+        > & {
+          metaapi_account_id?: string | null;
+          metaapi_region?: string | null;
+          last_synced_at?: string | null;
+          last_error?: string | null;
+        };
         Update: Partial<Omit<BrokerConnection, 'id' | 'user_id'>>;
+        Relationships: [];
       };
       positions: {
         Row: Position;
         Insert: Omit<Position, 'id' | 'synced_at'>;
         Update: Partial<Omit<Position, 'id' | 'user_id'>>;
+        // The only embedded-select relation actually used in the app
+        // (positions.select('*, broker_connections(...)')) — without real
+        // metadata here, postgrest-js's type-level query parser can't
+        // resolve the join and reports SelectQueryError at compile time,
+        // even though it works fine at runtime (Postgrest infers real
+        // relationships from the live DB's actual foreign keys).
+        Relationships: [
+          {
+            foreignKeyName: 'positions_broker_connection_id_fkey';
+            columns: ['broker_connection_id'];
+            isOneToOne: false;
+            referencedRelation: 'broker_connections';
+            referencedColumns: ['id'];
+          },
+        ];
       };
       portfolio_snapshots: {
         Row: PortfolioSnapshot;
         Insert: Omit<PortfolioSnapshot, 'id' | 'created_at'>;
         Update: never; // append-only
+        Relationships: [];
       };
       manual_assets: {
         Row: ManualAsset;
         Insert: Omit<ManualAsset, 'id' | 'created_at' | 'updated_at'>;
         Update: Partial<Omit<ManualAsset, 'id' | 'user_id'>>;
+        Relationships: [];
       };
       savings_pods: {
         Row: SavingsPod;
@@ -193,26 +247,49 @@ export interface Database {
           current_amount?: number;
         };
         Update: Partial<Omit<SavingsPod, 'id' | 'user_id'>>;
+        Relationships: [];
       };
       pod_contributions: {
         Row: PodContribution;
         Insert: Omit<PodContribution, 'id' | 'created_at'>;
         Update: never; // append-only
+        Relationships: [];
       };
       alerts: {
         Row: Alert;
         Insert: Omit<Alert, 'id' | 'created_at'>;
         Update: Partial<Omit<Alert, 'id' | 'user_id'>>;
+        Relationships: [];
       };
       alert_history: {
         Row: AlertHistoryEntry;
         Insert: Omit<AlertHistoryEntry, 'id' | 'created_at'>;
         Update: never; // append-only
+        Relationships: [];
       };
       subscriptions: {
         Row: Subscription;
         Insert: Omit<Subscription, 'id' | 'created_at' | 'updated_at'>;
         Update: Partial<Omit<Subscription, 'id' | 'user_id'>>;
+        Relationships: [];
+      };
+    };
+    Views: {
+      [_ in never]: never;
+    };
+    Functions: {
+      // supabase/migrations/20260617000001_atomic_pod_contribution.sql
+      contribute_to_pod: {
+        Args: {
+          p_pod_id: string;
+          p_user_id: string;
+          p_amount: number;
+          p_note?: string | null;
+        };
+        Returns: {
+          contribution_id: string;
+          new_current_amount: number;
+        }[];
       };
     };
   };

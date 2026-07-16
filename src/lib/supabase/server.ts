@@ -1,4 +1,4 @@
-import { createServerClient, type CookieOptions } from '@supabase/ssr';
+import { createServerClient } from '@supabase/ssr';
 import { cookies } from 'next/headers';
 import type { Database } from '@/types/database';
 
@@ -6,6 +6,11 @@ import type { Database } from '@/types/database';
  * Server-side Supabase client for use in Server Components, Route Handlers,
  * and Server Actions. Reads/writes the session via Next.js cookies so auth
  * state stays in sync between server and client.
+ *
+ * Uses getAll/setAll (the current @supabase/ssr cookie API) rather than
+ * the deprecated get/set/remove trio — that trio's own doc comment warns
+ * it causes "random logouts, early session termination" if handled
+ * incorrectly, so this isn't just a style preference.
  *
  * Still uses the anon key + RLS, not the service role key — this respects
  * the logged-in user's own permissions. Use createServiceClient() instead
@@ -24,22 +29,17 @@ export function createClient() {
 
   return createServerClient<Database>(url, anonKey, {
     cookies: {
-      get(name: string) {
-        return cookieStore.get(name)?.value;
+      getAll() {
+        return cookieStore.getAll();
       },
-      set(name: string, value: string, options: CookieOptions) {
+      setAll(cookiesToSet) {
         try {
-          cookieStore.set({ name, value, ...options });
+          cookiesToSet.forEach(({ name, value, options }) => {
+            cookieStore.set(name, value, options);
+          });
         } catch {
           // Called from a Server Component — middleware handles the actual
           // session refresh, so this can safely no-op here.
-        }
-      },
-      remove(name: string, options: CookieOptions) {
-        try {
-          cookieStore.set({ name, value: '', ...options });
-        } catch {
-          // Same as above — safe to ignore in Server Component context.
         }
       },
     },
@@ -66,14 +66,11 @@ export function createServiceClient() {
 
   return createServerClient<Database>(url, serviceKey, {
     cookies: {
-      get() {
-        return undefined;
+      getAll() {
+        return [];
       },
-      set() {
+      setAll() {
         // Service client is never tied to a user session — no cookies to set.
-      },
-      remove() {
-        // Service client is never tied to a user session — no cookies to remove.
       },
     },
   });

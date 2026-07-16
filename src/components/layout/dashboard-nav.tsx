@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
-import { LayoutGrid, TrendingUp, Target, Bell, Settings } from 'lucide-react';
+import { LayoutGrid, TrendingUp, Target, Bell } from 'lucide-react';
 import { createClient } from '@/lib/supabase/client';
 import { cn } from '@/lib/utils/cn';
 import type { SubscriptionTier } from '@/types/database';

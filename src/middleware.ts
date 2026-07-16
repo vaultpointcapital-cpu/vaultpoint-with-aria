@@ -1,10 +1,15 @@
-import { createServerClient, type CookieOptions } from '@supabase/ssr';
+import { createServerClient } from '@supabase/ssr';
 import { NextResponse, type NextRequest } from 'next/server';
 
 /**
  * Refreshes the Supabase auth session on every request and keeps cookies
  * in sync. Required for SSR auth to work correctly with the App Router —
  * without this, sessions silently expire mid-use.
+ *
+ * Uses getAll/setAll (the current @supabase/ssr cookie API), not the
+ * deprecated get/set/remove trio — the response object must be
+ * re-created after mutating request.cookies so the new cookies actually
+ * propagate to it, same as the old pattern did per-cookie.
  */
 export async function middleware(request: NextRequest) {
   let response = NextResponse.next({
@@ -22,18 +27,15 @@ export async function middleware(request: NextRequest) {
 
   const supabase = createServerClient(url, anonKey, {
     cookies: {
-      get(name: string) {
-        return request.cookies.get(name)?.value;
+      getAll() {
+        return request.cookies.getAll();
       },
-      set(name: string, value: string, options: CookieOptions) {
-        request.cookies.set({ name, value, ...options });
+      setAll(cookiesToSet) {
+        cookiesToSet.forEach(({ name, value }) => request.cookies.set(name, value));
         response = NextResponse.next({ request: { headers: request.headers } });
-        response.cookies.set({ name, value, ...options });
-      },
-      remove(name: string, options: CookieOptions) {
-        request.cookies.set({ name, value: '', ...options });
-        response = NextResponse.next({ request: { headers: request.headers } });
-        response.cookies.set({ name, value: '', ...options });
+        cookiesToSet.forEach(({ name, value, options }) => {
+          response.cookies.set(name, value, options);
+        });
       },
     },
   });

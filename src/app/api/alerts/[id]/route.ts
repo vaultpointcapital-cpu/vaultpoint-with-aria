@@ -2,7 +2,7 @@ import { type NextRequest } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 import { updateAlertSchema, canCreateAnotherAlert } from '@/lib/validations/alerts';
 import { apiError, apiSuccess } from '@/lib/utils/api-response';
-import type { SubscriptionTier } from '@/types/database';
+import type { Alert, SubscriptionTier } from '@/types/database';
 
 /**
  * PATCH /api/alerts/:id
@@ -51,7 +51,7 @@ export async function PATCH(request: NextRequest, { params }: { params: { id: st
     }
   }
 
-  const updatePayload: Record<string, unknown> = {};
+  const updatePayload: Partial<Omit<Alert, 'id' | 'user_id'>> = {};
   if (parsed.data.isActive !== undefined) updatePayload.is_active = parsed.data.isActive;
   if (parsed.data.threshold !== undefined) updatePayload.threshold = parsed.data.threshold;
 
