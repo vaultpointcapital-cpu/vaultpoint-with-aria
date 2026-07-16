@@ -25,9 +25,10 @@ def make_fake_client(positions=None, error: Exception | None = None):
     class _FakeClient(BrokerClient):
         aclose_called = False
 
-        def __init__(self, api_key: str, api_secret: str):
+        def __init__(self, api_key: str, api_secret: str, api_passphrase: str | None = None):
             self.api_key = api_key
             self.api_secret = api_secret
+            self.api_passphrase = api_passphrase
 
         async def get_positions(self):
             if error is not None:
@@ -234,11 +235,72 @@ async def test_sync_connection_routes_binance_connections_to_binance_client(
     assert connection_updates[0].values["sync_status"] == "connected"
 
 
-async def test_sync_connection_skips_unregistered_broker(fake_supabase, fake_cache):
-    # 'kucoin' is a valid BrokerType member but has no BROKER_CLIENTS entry
-    # yet — the branch this test targets is distinct from an unknown-string
-    # broker (covered by test_sync_connection_skips_unknown_broker_string).
+async def test_sync_connection_routes_kucoin_connections_and_decrypts_passphrase(
+    monkeypatch, fake_supabase, fake_cache
+):
+    position = Position(
+        symbol="XBTUSDTM",
+        side="long",
+        size=1,
+        entry_price=60000,
+        mark_price=61200,
+        broker_source=BrokerType.KUCOIN,
+    )
+    captured_passphrase = {}
+
+    def _fake_kucoin_client(api_key, api_secret, api_passphrase=None):
+        captured_passphrase["value"] = api_passphrase
+        return make_fake_client(positions=[position])(api_key, api_secret, api_passphrase)
+
+    monkeypatch.setitem(sync_service.BROKER_CLIENTS, BrokerType.KUCOIN, _fake_kucoin_client)
+    connection = {
+        **CONNECTION,
+        "broker": "kucoin",
+        "encrypted_api_passphrase": "ciphertext-passphrase",
+        "api_passphrase_iv": "iv-passphrase",
+    }
+    fake_supabase.select_responses[("positions", "id, symbol, side")] = []
+    fake_supabase.select_responses[("portfolio_snapshots", "id")] = [{"id": "already-exists"}]
+
+    await sync_service.sync_connection(connection)
+
+    assert captured_passphrase["value"] == "decrypted:ciphertext-passphrase"
+
+    upserts = fake_supabase.calls_for("positions", "upsert")
+    assert len(upserts) == 1
+    assert upserts[0].rows[0]["symbol"] == "XBTUSDTM"
+
+    connection_updates = fake_supabase.calls_for("broker_connections", "update")
+    assert connection_updates[0].values["sync_status"] == "connected"
+
+
+async def test_sync_connection_marks_error_when_kucoin_client_construction_fails(
+    monkeypatch, fake_supabase, fake_cache
+):
+    def _raising_client(api_key, api_secret, api_passphrase=None):
+        raise ValueError("KucoinClient requires api_passphrase")
+
+    monkeypatch.setitem(sync_service.BROKER_CLIENTS, BrokerType.KUCOIN, _raising_client)
+    # No encrypted_api_passphrase on this row — decrypt is skipped, so
+    # api_passphrase stays None and client construction is what fails.
     connection = {**CONNECTION, "broker": "kucoin"}
+
+    await sync_service.sync_connection(connection)
+
+    assert fake_supabase.calls_for("positions") == []
+    assert fake_cache == []
+
+    connection_updates = fake_supabase.calls_for("broker_connections", "update")
+    assert len(connection_updates) == 1
+    assert connection_updates[0].values["sync_status"] == "error"
+    assert "api_passphrase" in connection_updates[0].values["last_error"]
+
+
+async def test_sync_connection_skips_unregistered_broker(fake_supabase, fake_cache):
+    # 'metatrader' is a valid BrokerType member but has no BROKER_CLIENTS
+    # entry yet — the branch this test targets is distinct from an
+    # unknown-string broker (covered by test_sync_connection_skips_unknown_broker_string).
+    connection = {**CONNECTION, "broker": "metatrader"}
 
     await sync_service.sync_connection(connection)
 

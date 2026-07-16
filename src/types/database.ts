@@ -37,6 +37,8 @@ export interface BrokerConnection {
   encrypted_api_secret: string;
   api_key_iv: string;
   api_secret_iv: string;
+  encrypted_api_passphrase: string | null; // KuCoin only — null for Bybit/Binance/MetaTrader
+  api_passphrase_iv: string | null;
   is_read_only: boolean;
   sync_status: SyncStatus;
   last_synced_at: string | null;

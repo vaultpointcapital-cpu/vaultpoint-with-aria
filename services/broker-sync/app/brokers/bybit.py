@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import hmac
 import time
+from typing import Optional
 
 import httpx
 
@@ -21,8 +22,8 @@ class BybitClient(BrokerClient):
     cancels an order.
     """
 
-    def __init__(self, api_key: str, api_secret: str):
-        super().__init__(api_key, api_secret)
+    def __init__(self, api_key: str, api_secret: str, api_passphrase: Optional[str] = None):
+        super().__init__(api_key, api_secret, api_passphrase)
         self._client = httpx.AsyncClient(base_url=BYBIT_BASE_URL, timeout=10.0)
 
     async def aclose(self) -> None:

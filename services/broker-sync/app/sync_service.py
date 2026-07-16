@@ -6,6 +6,7 @@ from typing import Type
 from .brokers.base import BrokerClient
 from .brokers.binance import BinanceClient
 from .brokers.bybit import BybitClient
+from .brokers.kucoin import KucoinClient
 from .encryption import decrypt
 from .financial import calculate_position_value
 from .models import BrokerType
@@ -23,6 +24,7 @@ logger = logging.getLogger("broker_sync")
 BROKER_CLIENTS: dict[BrokerType, Type[BrokerClient]] = {
     BrokerType.BYBIT: BybitClient,
     BrokerType.BINANCE: BinanceClient,
+    BrokerType.KUCOIN: KucoinClient,
 }
 
 CRYPTO_BROKERS = {BrokerType.BYBIT, BrokerType.BINANCE, BrokerType.KUCOIN}
@@ -61,12 +63,26 @@ async def sync_connection(connection: dict) -> None:
     try:
         api_key = decrypt(connection["encrypted_api_key"], connection["api_key_iv"])
         api_secret = decrypt(connection["encrypted_api_secret"], connection["api_secret_iv"])
+        api_passphrase = None
+        if connection.get("encrypted_api_passphrase") and connection.get("api_passphrase_iv"):
+            api_passphrase = decrypt(
+                connection["encrypted_api_passphrase"], connection["api_passphrase_iv"]
+            )
     except Exception:
         logger.exception("Failed to decrypt credentials for connection=%s", connection_id)
         await _mark_error(supabase, connection_id, "Could not decrypt stored credentials.")
         return
 
-    client = client_cls(api_key, api_secret)
+    try:
+        client = client_cls(api_key, api_secret, api_passphrase=api_passphrase)
+    except Exception as exc:
+        # e.g. a KuCoin row that somehow reached here without a passphrase
+        # despite the DB check constraint — construction failing loudly
+        # here beats a confusing failure deeper inside get_positions().
+        logger.exception("Failed to construct broker client for connection=%s (%s)", connection_id, broker.value)
+        await _mark_error(supabase, connection_id, str(exc)[:500])
+        return
+
     try:
         positions = await client.get_positions()
     except Exception as exc:

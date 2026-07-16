@@ -53,10 +53,11 @@ export async function POST(request: NextRequest) {
     return apiError('VALIDATION_ERROR', 'Invalid broker connection data.', parsed.error.flatten());
   }
 
-  const { broker, label, apiKey, apiSecret } = parsed.data;
+  const { broker, label, apiKey, apiSecret, apiPassphrase } = parsed.data;
 
   const encryptedKey = encrypt(apiKey);
   const encryptedSecret = encrypt(apiSecret);
+  const encryptedPassphrase = apiPassphrase ? encrypt(apiPassphrase) : null;
 
   const { data, error } = await supabase
     .from('broker_connections')
@@ -68,6 +69,8 @@ export async function POST(request: NextRequest) {
       encrypted_api_secret: encryptedSecret.ciphertext,
       api_key_iv: encryptedKey.iv,
       api_secret_iv: encryptedSecret.iv,
+      encrypted_api_passphrase: encryptedPassphrase?.ciphertext ?? null,
+      api_passphrase_iv: encryptedPassphrase?.iv ?? null,
       is_read_only: true,
       sync_status: 'pending',
     })
