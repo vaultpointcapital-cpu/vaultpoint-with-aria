@@ -4,15 +4,17 @@ import Link from 'next/link';
 import { Link2, Target, TrendingUp, TrendingDown } from 'lucide-react';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
+import { NetWorthChart } from '@/components/dashboard/net-worth-chart';
 import { formatCurrency, formatPercentage } from '@/lib/utils/cn';
 import { calculatePositionPnl, calculatePositionPnlPct, calculatePodProgress } from '@/lib/utils/financial';
-import type { Position, SavingsPod } from '@/types/database';
+import type { Position, SavingsPod, PortfolioSnapshot } from '@/types/database';
 
 interface DashboardClientProps {
   initialNetWorth: number;
   initialPnl: number;
   initialPositions: Position[];
   initialPods: SavingsPod[];
+  initialSnapshots: PortfolioSnapshot[];
   hasConnectedBroker: boolean;
 }
 
@@ -21,6 +23,7 @@ export function DashboardClient({
   initialPnl,
   initialPositions,
   initialPods,
+  initialSnapshots,
   hasConnectedBroker,
 }: DashboardClientProps) {
   if (!hasConnectedBroker && initialPositions.length === 0) {
@@ -51,6 +54,8 @@ export function DashboardClient({
           </span>
         </div>
       </Card>
+
+      <NetWorthChart snapshots={initialSnapshots} />
 
       {/* Stat row */}
       <div className="grid grid-cols-3 gap-4">

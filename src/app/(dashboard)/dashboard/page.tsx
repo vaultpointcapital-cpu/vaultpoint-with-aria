@@ -12,7 +12,7 @@ export default async function DashboardPage() {
     return null;
   }
 
-  const [positionsResult, manualAssetsResult, podsResult, brokerConnectionsResult] =
+  const [positionsResult, manualAssetsResult, podsResult, brokerConnectionsResult, snapshotsResult] =
     await Promise.all([
       supabase.from('positions').select('*').eq('user_id', authData.user.id),
       supabase.from('manual_assets').select('*').eq('user_id', authData.user.id),
@@ -25,12 +25,21 @@ export default async function DashboardPage() {
         .from('broker_connections')
         .select('id, broker, label, sync_status')
         .eq('user_id', authData.user.id),
+      // Written once daily by the (not-yet-deployed) Python service's
+      // snapshot job — may be empty for a brand new user, which is a
+      // "no history yet" state, not an error.
+      supabase
+        .from('portfolio_snapshots')
+        .select('*')
+        .eq('user_id', authData.user.id)
+        .order('snapshot_date', { ascending: true }),
     ]);
 
   const positions = positionsResult.data ?? [];
   const manualAssets = manualAssetsResult.data ?? [];
   const pods = podsResult.data ?? [];
   const brokerConnections = brokerConnectionsResult.data ?? [];
+  const snapshots = snapshotsResult.data ?? [];
 
   const netWorth = calculateNetWorth(positions, manualAssets);
   const totalUnrealizedPnl = calculateTotalPnl(positions);
@@ -41,6 +50,7 @@ export default async function DashboardPage() {
       initialPnl={totalUnrealizedPnl}
       initialPositions={positions}
       initialPods={pods}
+      initialSnapshots={snapshots}
       hasConnectedBroker={brokerConnections.length > 0}
     />
   );
