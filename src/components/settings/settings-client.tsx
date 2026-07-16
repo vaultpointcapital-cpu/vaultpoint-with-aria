@@ -8,7 +8,8 @@ import { createClient } from '@/lib/supabase/client';
 import { ProfileForm } from '@/components/settings/profile-form';
 import { PasswordForm } from '@/components/settings/password-form';
 import { DangerZone } from '@/components/settings/danger-zone';
-import type { SubscriptionTier } from '@/types/database';
+import { AcademyVideosSection } from '@/components/academy/academy-videos-section';
+import type { AcademyVideo, SubscriptionTier } from '@/types/database';
 
 interface ProfileSummary {
   full_name: string | null;
@@ -23,6 +24,7 @@ interface SettingsClientProps {
   profile: ProfileSummary | null;
   currentPeriodEnd: string | null;
   connectedBrokerCount: number;
+  academyVideos: AcademyVideo[];
 }
 
 export function SettingsClient({
@@ -30,6 +32,7 @@ export function SettingsClient({
   profile,
   currentPeriodEnd,
   connectedBrokerCount,
+  academyVideos,
 }: SettingsClientProps) {
   const router = useRouter();
   const tier = profile?.subscription_tier ?? 'free';
@@ -67,6 +70,8 @@ export function SettingsClient({
           </div>
         </div>
       </Card>
+
+      <AcademyVideosSection videos={academyVideos} />
 
       {/* Subscription */}
       <Card>

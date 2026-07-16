@@ -11,7 +11,7 @@ export default async function SettingsPage() {
     return null;
   }
 
-  const [profileResult, subscriptionResult, brokerCountResult] = await Promise.all([
+  const [profileResult, subscriptionResult, brokerCountResult, academyVideosResult] = await Promise.all([
     supabase
       .from('users')
       .select('full_name, country_code, subscription_tier, academy_student, created_at')
@@ -29,6 +29,12 @@ export default async function SettingsPage() {
       .from('broker_connections')
       .select('id', { count: 'exact', head: true })
       .eq('user_id', authData.user.id),
+    supabase
+      .from('academy_videos')
+      .select('*')
+      .eq('video_type', 'long_form')
+      .eq('is_active', true)
+      .order('display_order', { ascending: true }),
   ]);
 
   return (
@@ -37,6 +43,7 @@ export default async function SettingsPage() {
       profile={profileResult.data}
       currentPeriodEnd={subscriptionResult.data?.current_period_end ?? null}
       connectedBrokerCount={brokerCountResult.count ?? 0}
+      academyVideos={academyVideosResult.data ?? []}
     />
   );
 }

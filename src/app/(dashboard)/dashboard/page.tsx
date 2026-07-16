@@ -12,34 +12,50 @@ export default async function DashboardPage() {
     return null;
   }
 
-  const [positionsResult, manualAssetsResult, podsResult, brokerConnectionsResult, snapshotsResult] =
-    await Promise.all([
-      supabase.from('positions').select('*').eq('user_id', authData.user.id),
-      supabase.from('manual_assets').select('*').eq('user_id', authData.user.id),
-      supabase
-        .from('savings_pods')
-        .select('*')
-        .eq('user_id', authData.user.id)
-        .neq('status', 'archived'),
-      supabase
-        .from('broker_connections')
-        .select('id, broker, label, sync_status')
-        .eq('user_id', authData.user.id),
-      // Written once daily by the (not-yet-deployed) Python service's
-      // snapshot job — may be empty for a brand new user, which is a
-      // "no history yet" state, not an error.
-      supabase
-        .from('portfolio_snapshots')
-        .select('*')
-        .eq('user_id', authData.user.id)
-        .order('snapshot_date', { ascending: true }),
-    ]);
+  const [
+    positionsResult,
+    manualAssetsResult,
+    podsResult,
+    brokerConnectionsResult,
+    snapshotsResult,
+    dailyVideoResult,
+  ] = await Promise.all([
+    supabase.from('positions').select('*').eq('user_id', authData.user.id),
+    supabase.from('manual_assets').select('*').eq('user_id', authData.user.id),
+    supabase
+      .from('savings_pods')
+      .select('*')
+      .eq('user_id', authData.user.id)
+      .neq('status', 'archived'),
+    supabase
+      .from('broker_connections')
+      .select('id, broker, label, sync_status')
+      .eq('user_id', authData.user.id),
+    // Written once daily by the (not-yet-deployed) Python service's
+    // snapshot job — may be empty for a brand new user, which is a
+    // "no history yet" state, not an error.
+    supabase
+      .from('portfolio_snapshots')
+      .select('*')
+      .eq('user_id', authData.user.id)
+      .order('snapshot_date', { ascending: true }),
+    // Shared content, not per-user — exactly one active row expected at
+    // a time (see supabase/migrations/20260716000002_add_academy_videos.sql).
+    supabase
+      .from('academy_videos')
+      .select('*')
+      .eq('video_type', 'daily_short')
+      .eq('is_active', true)
+      .limit(1)
+      .maybeSingle(),
+  ]);
 
   const positions = positionsResult.data ?? [];
   const manualAssets = manualAssetsResult.data ?? [];
   const pods = podsResult.data ?? [];
   const brokerConnections = brokerConnectionsResult.data ?? [];
   const snapshots = snapshotsResult.data ?? [];
+  const dailyVideo = dailyVideoResult.data ?? null;
 
   const netWorth = calculateNetWorth(positions, manualAssets);
   const totalUnrealizedPnl = calculateTotalPnl(positions);
@@ -51,6 +67,7 @@ export default async function DashboardPage() {
       initialPositions={positions}
       initialPods={pods}
       initialSnapshots={snapshots}
+      dailyVideo={dailyVideo}
       hasConnectedBroker={brokerConnections.length > 0}
     />
   );

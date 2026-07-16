@@ -5,9 +5,10 @@ import { Link2, Target, TrendingUp, TrendingDown } from 'lucide-react';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { NetWorthChart } from '@/components/dashboard/net-worth-chart';
+import { DailyVideoCard } from '@/components/dashboard/daily-video-card';
 import { formatCurrency, formatPercentage } from '@/lib/utils/cn';
 import { calculatePositionPnl, calculatePositionPnlPct, calculatePodProgress } from '@/lib/utils/financial';
-import type { Position, SavingsPod, PortfolioSnapshot } from '@/types/database';
+import type { Position, SavingsPod, PortfolioSnapshot, AcademyVideo } from '@/types/database';
 
 interface DashboardClientProps {
   initialNetWorth: number;
@@ -15,6 +16,7 @@ interface DashboardClientProps {
   initialPositions: Position[];
   initialPods: SavingsPod[];
   initialSnapshots: PortfolioSnapshot[];
+  dailyVideo: AcademyVideo | null;
   hasConnectedBroker: boolean;
 }
 
@@ -24,10 +26,11 @@ export function DashboardClient({
   initialPositions,
   initialPods,
   initialSnapshots,
+  dailyVideo,
   hasConnectedBroker,
 }: DashboardClientProps) {
   if (!hasConnectedBroker && initialPositions.length === 0) {
-    return <EmptyDashboardState />;
+    return <EmptyDashboardState dailyVideo={dailyVideo} />;
   }
 
   const isPnlPositive = initialPnl >= 0;
@@ -54,6 +57,8 @@ export function DashboardClient({
           </span>
         </div>
       </Card>
+
+      <DailyVideoCard video={dailyVideo} />
 
       <NetWorthChart snapshots={initialSnapshots} />
 
@@ -198,7 +203,7 @@ export function DashboardClient({
   );
 }
 
-function EmptyDashboardState() {
+function EmptyDashboardState({ dailyVideo }: { dailyVideo: AcademyVideo | null }) {
   return (
     <div className="flex min-h-[70vh] flex-col items-center justify-center gap-6 p-6 text-center">
       <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-accent/10">
@@ -216,6 +221,11 @@ function EmptyDashboardState() {
       <Button asChild>
         <Link href="/dashboard/brokers/add">Connect a broker</Link>
       </Button>
+      {dailyVideo && (
+        <div className="w-full max-w-xs">
+          <DailyVideoCard video={dailyVideo} />
+        </div>
+      )}
     </div>
   );
 }

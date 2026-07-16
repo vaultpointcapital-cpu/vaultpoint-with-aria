@@ -17,6 +17,8 @@ export type AlertOperator = 'above' | 'below';
 export type PaymentProvider = 'stripe' | 'paystack' | 'flutterwave';
 export type SubscriptionStatus = 'active' | 'past_due' | 'cancelled' | 'trialing';
 export type MtPlatform = 'mt4' | 'mt5';
+export type VideoProvider = 'youtube' | 'vimeo';
+export type VideoType = 'long_form' | 'daily_short';
 
 // Every domain model below is a `type` alias, not an `interface` — a real
 // TypeScript quirk, not a style choice: interfaces don't get an implicit
@@ -167,6 +169,20 @@ export type Subscription = {
   updated_at: string;
 };
 
+export type AcademyVideo = {
+  id: string;
+  title: string;
+  description: string | null;
+  video_provider: VideoProvider;
+  video_id: string;
+  video_type: VideoType;
+  thumbnail_url: string | null;
+  display_order: number;
+  is_active: boolean;
+  published_at: string;
+  created_at: string;
+};
+
 // ----------------------------------------------------------------------------
 // Supabase Database type — used to type the Supabase client generically.
 // Mirrors the shape `supabase gen types typescript` would produce.
@@ -271,6 +287,16 @@ export interface Database {
         Row: Subscription;
         Insert: Omit<Subscription, 'id' | 'created_at' | 'updated_at'>;
         Update: Partial<Omit<Subscription, 'id' | 'user_id'>>;
+        Relationships: [];
+      };
+      academy_videos: {
+        Row: AcademyVideo;
+        // No Insert/Update from the app — founder manages rows via the
+        // Supabase Table Editor, not through this client. Typed as never
+        // rather than omitted so an accidental .insert()/.update() call
+        // fails at compile time instead of silently hitting RLS at runtime.
+        Insert: never;
+        Update: never;
         Relationships: [];
       };
     };
