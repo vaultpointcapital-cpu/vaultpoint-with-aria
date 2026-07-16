@@ -16,6 +16,7 @@ export type AlertConditionType = 'price' | 'pnl_pct' | 'pnl_abs' | 'margin_pct';
 export type AlertOperator = 'above' | 'below';
 export type PaymentProvider = 'stripe' | 'paystack' | 'flutterwave';
 export type SubscriptionStatus = 'active' | 'past_due' | 'cancelled' | 'trialing';
+export type MtPlatform = 'mt4' | 'mt5';
 
 export interface User {
   id: string;
@@ -33,12 +34,24 @@ export interface BrokerConnection {
   user_id: string;
   broker: BrokerType;
   label: string;
-  encrypted_api_key: string;
-  encrypted_api_secret: string;
-  api_key_iv: string;
-  api_secret_iv: string;
-  encrypted_api_passphrase: string | null; // KuCoin only — null for Bybit/Binance/MetaTrader
+  // Bybit/Binance/KuCoin credentials — null for MetaTrader, which uses
+  // mt_login/mt_server/encrypted_mt_password instead.
+  encrypted_api_key: string | null;
+  encrypted_api_secret: string | null;
+  api_key_iv: string | null;
+  api_secret_iv: string | null;
+  encrypted_api_passphrase: string | null; // KuCoin only
   api_passphrase_iv: string | null;
+  // MetaTrader credentials — null for every other broker.
+  mt_login: string | null;
+  mt_server: string | null;
+  mt_platform: MtPlatform | null;
+  encrypted_mt_password: string | null;
+  mt_password_iv: string | null;
+  // Set by the Python poller on first successful MetaApi provisioning —
+  // null on a brand new metatrader row, not an error.
+  metaapi_account_id: string | null;
+  metaapi_region: string | null;
   is_read_only: boolean;
   sync_status: SyncStatus;
   last_synced_at: string | null;

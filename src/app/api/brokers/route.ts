@@ -53,11 +53,18 @@ export async function POST(request: NextRequest) {
     return apiError('VALIDATION_ERROR', 'Invalid broker connection data.', parsed.error.flatten());
   }
 
-  const { broker, label, apiKey, apiSecret, apiPassphrase } = parsed.data;
+  const { broker, label, apiKey, apiSecret, apiPassphrase, mtLogin, mtServer, mtPlatform, mtPassword } =
+    parsed.data;
 
-  const encryptedKey = encrypt(apiKey);
-  const encryptedSecret = encrypt(apiSecret);
+  // Exactly one of these two credential sets is present, enforced by
+  // addBrokerConnectionSchema's .refine() checks above — apiKey/apiSecret
+  // for everything except metatrader, mtLogin/mtServer/mtPassword only
+  // for metatrader. metaapi_account_id/metaapi_region are deliberately
+  // NOT set here — the Python poller provisions those on first sync.
+  const encryptedKey = apiKey ? encrypt(apiKey) : null;
+  const encryptedSecret = apiSecret ? encrypt(apiSecret) : null;
   const encryptedPassphrase = apiPassphrase ? encrypt(apiPassphrase) : null;
+  const encryptedMtPassword = mtPassword ? encrypt(mtPassword) : null;
 
   const { data, error } = await supabase
     .from('broker_connections')
@@ -65,12 +72,17 @@ export async function POST(request: NextRequest) {
       user_id: authData.user.id,
       broker,
       label,
-      encrypted_api_key: encryptedKey.ciphertext,
-      encrypted_api_secret: encryptedSecret.ciphertext,
-      api_key_iv: encryptedKey.iv,
-      api_secret_iv: encryptedSecret.iv,
+      encrypted_api_key: encryptedKey?.ciphertext ?? null,
+      encrypted_api_secret: encryptedSecret?.ciphertext ?? null,
+      api_key_iv: encryptedKey?.iv ?? null,
+      api_secret_iv: encryptedSecret?.iv ?? null,
       encrypted_api_passphrase: encryptedPassphrase?.ciphertext ?? null,
       api_passphrase_iv: encryptedPassphrase?.iv ?? null,
+      mt_login: mtLogin ?? null,
+      mt_server: mtServer ?? null,
+      mt_platform: mtPlatform ?? null,
+      encrypted_mt_password: encryptedMtPassword?.ciphertext ?? null,
+      mt_password_iv: encryptedMtPassword?.iv ?? null,
       is_read_only: true,
       sync_status: 'pending',
     })
@@ -84,7 +96,7 @@ export async function POST(request: NextRequest) {
   return apiSuccess(
     {
       connection: data,
-      maskedKey: maskKey(apiKey),
+      maskedKey: apiKey ? maskKey(apiKey) : maskKey(mtLogin ?? ''),
     },
     201
   );

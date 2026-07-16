@@ -1,3 +1,5 @@
+from typing import Optional
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -17,6 +19,13 @@ class Settings(BaseSettings):
     # Must match the Next.js app's PYTHON_SERVICE_API_KEY — the only
     # accepted caller of POST /sync/{user_id}.
     python_service_api_key: str
+
+    # Service-level MetaApi account token — authenticates VaultPoint's own
+    # MetaApi account, not any individual user. Only needed once a
+    # metatrader broker_connections row exists; optional so the service
+    # still starts cleanly for deployments that haven't enabled
+    # MetaTrader support yet.
+    metaapi_token: Optional[str] = None
 
     poll_interval_seconds: int = 60
     cache_ttl_seconds: int = 55

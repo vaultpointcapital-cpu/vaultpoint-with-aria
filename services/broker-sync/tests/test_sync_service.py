@@ -15,6 +15,19 @@ CONNECTION = {
     "api_secret_iv": "iv-secret",
 }
 
+METATRADER_CONNECTION = {
+    "id": "conn-mt-1",
+    "user_id": "user-1",
+    "broker": "metatrader",
+    "mt_login": "555666",
+    "mt_server": "Exness-MT5Real8",
+    "mt_platform": "mt5",
+    "encrypted_mt_password": "ciphertext-mt-password",
+    "mt_password_iv": "iv-mt-password",
+    "metaapi_account_id": None,
+    "metaapi_region": None,
+}
+
 
 def make_fake_client(positions=None, error: Exception | None = None):
     """A BrokerClient double whose get_positions() either returns a fixed
@@ -45,6 +58,46 @@ def make_fake_client(positions=None, error: Exception | None = None):
             type(self).aclose_called = True
 
     return _FakeClient
+
+
+def make_fake_metatrader_client(positions=None, provision_error: Exception | None = None):
+    """A MetaTraderClient double. Its constructor deliberately does NOT
+    match BrokerClient's (login/password/server/platform/metaapi_token
+    instead of api_key/api_secret) — that's the point of the dedicated
+    _build_metatrader_client() construction path being tested here.
+    """
+
+    class _FakeMetaTraderClient:
+        aclose_called = False
+
+        def __init__(self, login, password, server, platform, metaapi_token, account_id=None, region=None):
+            self.login = login
+            self.password = password
+            self.server = server
+            self.platform = platform
+            self.metaapi_token = metaapi_token
+            self.account_id = account_id
+            self.region = region
+
+        async def provision(self):
+            if provision_error is not None:
+                raise provision_error
+            self.account_id = "provisioned-id"
+            self.region = "provisioned-region"
+
+        async def get_positions(self):
+            return positions or []
+
+        async def get_balance(self):
+            return 0.0
+
+        async def test_connection(self):
+            return True
+
+        async def aclose(self):
+            type(self).aclose_called = True
+
+    return _FakeMetaTraderClient
 
 
 @pytest.fixture(autouse=True)
@@ -296,13 +349,133 @@ async def test_sync_connection_marks_error_when_kucoin_client_construction_fails
     assert "api_passphrase" in connection_updates[0].values["last_error"]
 
 
-async def test_sync_connection_skips_unregistered_broker(fake_supabase, fake_cache):
-    # 'metatrader' is a valid BrokerType member but has no BROKER_CLIENTS
-    # entry yet — the branch this test targets is distinct from an
-    # unknown-string broker (covered by test_sync_connection_skips_unknown_broker_string).
-    connection = {**CONNECTION, "broker": "metatrader"}
+async def test_sync_connection_provisions_metatrader_on_first_sync(monkeypatch, fake_supabase, fake_cache):
+    monkeypatch.setattr(sync_service.settings, "metaapi_token", "test-metaapi-token")
+    position = Position(
+        symbol="EURUSD",
+        side="long",
+        size=50000,
+        entry_price=1.1,
+        mark_price=1.105,
+        broker_source=BrokerType.METATRADER,
+    )
+    monkeypatch.setattr(sync_service, "MetaTraderClient", make_fake_metatrader_client(positions=[position]))
+    fake_supabase.select_responses[("positions", "id, symbol, side")] = []
+    fake_supabase.select_responses[("portfolio_snapshots", "id")] = [{"id": "already-exists"}]
+
+    await sync_service.sync_connection(METATRADER_CONNECTION)
+
+    updates = fake_supabase.calls_for("broker_connections", "update")
+    # The provisioning result is persisted...
+    assert any(
+        u.values.get("metaapi_account_id") == "provisioned-id"
+        and u.values.get("metaapi_region") == "provisioned-region"
+        for u in updates
+    )
+    # ...and the sync itself still completes normally afterward.
+    assert any(u.values.get("sync_status") == "connected" for u in updates)
+
+    upserts = fake_supabase.calls_for("positions", "upsert")
+    assert len(upserts) == 1
+    assert upserts[0].rows[0]["symbol"] == "EURUSD"
+
+
+async def test_sync_connection_skips_provisioning_when_already_provisioned(
+    monkeypatch, fake_supabase, fake_cache
+):
+    monkeypatch.setattr(sync_service.settings, "metaapi_token", "test-metaapi-token")
+
+    async def _provision_should_not_be_called(self):
+        raise AssertionError("provision() must not be called when account_id/region are already set")
+
+    client_cls = make_fake_metatrader_client()
+    client_cls.provision = _provision_should_not_be_called
+    monkeypatch.setattr(sync_service, "MetaTraderClient", client_cls)
+
+    connection = {**METATRADER_CONNECTION, "metaapi_account_id": "existing-id", "metaapi_region": "london"}
+    fake_supabase.select_responses[("positions", "id, symbol, side")] = []
+    fake_supabase.select_responses[("portfolio_snapshots", "id")] = [{"id": "already-exists"}]
 
     await sync_service.sync_connection(connection)
+
+    updates = fake_supabase.calls_for("broker_connections", "update")
+    assert all("metaapi_account_id" not in u.values for u in updates)
+    assert any(u.values.get("sync_status") == "connected" for u in updates)
+
+
+async def test_sync_connection_marks_error_when_metaapi_token_not_configured(
+    monkeypatch, fake_supabase, fake_cache
+):
+    monkeypatch.setattr(sync_service.settings, "metaapi_token", None)
+
+    await sync_service.sync_connection(METATRADER_CONNECTION)
+
+    assert fake_supabase.calls_for("positions") == []
+    assert fake_cache == []
+
+    connection_updates = fake_supabase.calls_for("broker_connections", "update")
+    assert len(connection_updates) == 1
+    assert connection_updates[0].values["sync_status"] == "error"
+    assert "not configured" in connection_updates[0].values["last_error"]
+
+
+async def test_sync_connection_marks_error_when_metatrader_provisioning_fails(
+    monkeypatch, fake_supabase, fake_cache
+):
+    monkeypatch.setattr(sync_service.settings, "metaapi_token", "test-metaapi-token")
+    monkeypatch.setattr(
+        sync_service,
+        "MetaTraderClient",
+        make_fake_metatrader_client(
+            provision_error=RuntimeError(
+                "MetaApi account creation failed (403): To allow trading account deployment please top up your account."
+            )
+        ),
+    )
+
+    await sync_service.sync_connection(METATRADER_CONNECTION)
+
+    assert fake_supabase.calls_for("positions") == []
+    assert fake_cache == []
+
+    connection_updates = fake_supabase.calls_for("broker_connections", "update")
+    assert len(connection_updates) == 1
+    assert connection_updates[0].values["sync_status"] == "error"
+    assert "top up your account" in connection_updates[0].values["last_error"]
+    # A failed provision must never leave a partial account_id/region
+    # written — the row stays exactly as unprovisioned as it started.
+    assert "metaapi_account_id" not in connection_updates[0].values
+
+
+async def test_sync_connection_marks_error_on_mt_password_decrypt_failure(
+    monkeypatch, fake_supabase, fake_cache
+):
+    monkeypatch.setattr(sync_service.settings, "metaapi_token", "test-metaapi-token")
+
+    def _raise(*args, **kwargs):
+        raise ValueError("bad ciphertext")
+
+    monkeypatch.setattr(sync_service, "decrypt", _raise)
+
+    await sync_service.sync_connection(METATRADER_CONNECTION)
+
+    assert fake_supabase.calls_for("positions") == []
+    assert fake_cache == []
+
+    connection_updates = fake_supabase.calls_for("broker_connections", "update")
+    assert len(connection_updates) == 1
+    assert connection_updates[0].values["sync_status"] == "error"
+    assert connection_updates[0].values["last_error"] == "Could not decrypt stored credentials."
+
+
+async def test_sync_connection_skips_unregistered_broker(monkeypatch, fake_supabase, fake_cache):
+    # All four BrokerType members are registered today, so simulate the
+    # "valid enum member, no BROKER_CLIENTS entry yet" state directly —
+    # the branch this test targets is distinct from an unknown-string
+    # broker (covered by test_sync_connection_skips_unknown_broker_string).
+    monkeypatch.delitem(sync_service.BROKER_CLIENTS, BrokerType.BYBIT)
+
+    await sync_service.sync_connection(CONNECTION)
 
     assert fake_supabase.calls == []
     assert fake_cache == []
