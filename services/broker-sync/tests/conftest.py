@@ -32,6 +32,8 @@ class FakeQuery:
         self.rows = None
         self.on_conflict = None
         self.filters: list[tuple] = []
+        self._single = False
+        self._order = None
 
     def select(self, columns):
         self.op = "select"
@@ -73,10 +75,31 @@ class FakeQuery:
         self.filters.append(("in_", col, vals))
         return self
 
+    def single(self):
+        self._single = True
+        return self
+
+    def order(self, col, desc=False):
+        self._order = (col, desc)
+        return self
+
     def execute(self):
         self.client.calls.append(self)
         if self.op == "select":
-            return FakeResult(self.client.select_responses.get((self.table_name, self.columns), []))
+            data = self.client.select_responses.get((self.table_name, self.columns), [])
+            if self._single:
+                return FakeResult(data[0] if data else None)
+            return FakeResult(data)
+        if self.op == "insert":
+            responses = self.client.insert_responses
+            if self.table_name in responses:
+                return FakeResult(responses[self.table_name])
+            # Auto-synthesize a row with a fake id so code doing
+            # `.data[0]["id"]` after an insert works without needing
+            # this configured per-test for the common case.
+            rows = self.values if isinstance(self.values, list) else [self.values]
+            synthesized = [{**row, "id": row.get("id", f"fake-id-{len(self.client.calls)}")} for row in rows]
+            return FakeResult(synthesized)
         return FakeResult(None)
 
 
@@ -90,6 +113,7 @@ class FakeSupabase:
     def __init__(self):
         self.calls: list[FakeQuery] = []
         self.select_responses: dict[tuple, list] = {}
+        self.insert_responses: dict[str, list] = {}
 
     def table(self, name: str) -> FakeQuery:
         return FakeQuery(name, self)

@@ -8,7 +8,9 @@ from .config import settings
 _redis = Redis(url=settings.upstash_redis_rest_url, token=settings.upstash_redis_rest_token)
 
 LAST_POLL_KEY = "health:last_successful_poll"
+LAST_ALERT_EVAL_KEY = "health:last_alert_evaluation"
 POLL_LOCK_KEY = "lock:poll_all_connections"
+ALERT_LOCK_KEY = "lock:evaluate_all_alerts"
 # Safety margin above a normal cycle's expected duration. The lock is
 # explicitly released at the end of a well-behaved cycle (see
 # release_poll_lock) — this TTL only matters if a holder crashes or hangs
@@ -35,6 +37,18 @@ async def record_poll_heartbeat() -> None:
 
 async def get_last_poll_heartbeat() -> str | None:
     return await _redis.get(LAST_POLL_KEY)
+
+
+async def record_alert_evaluation_heartbeat() -> None:
+    """Same shape as record_poll_heartbeat, for the Alert Engine's own
+    cycle — kept as a distinct key since the two jobs run independently
+    and a stale one shouldn't be masked by the other still being fresh.
+    """
+    await _redis.set(LAST_ALERT_EVAL_KEY, datetime.now(UTC).isoformat())
+
+
+async def get_last_alert_evaluation_heartbeat() -> str | None:
+    return await _redis.get(LAST_ALERT_EVAL_KEY)
 
 
 def get_redis() -> Redis:
@@ -66,3 +80,20 @@ async def release_poll_lock() -> None:
     lock delete another instance's still-active one."""
     redis = get_redis()
     await redis.delete(POLL_LOCK_KEY)
+
+
+async def acquire_alert_lock() -> bool:
+    """Same reasoning as acquire_poll_lock, for the alert-evaluation
+    job — a separate lock key since these two scheduled jobs run
+    independently and shouldn't block each other."""
+    redis = get_redis()
+    ttl = settings.alert_evaluation_interval_seconds + POLL_LOCK_TTL_BUFFER_SECONDS
+    acquired = await redis.set(ALERT_LOCK_KEY, "1", nx=True, ex=ttl)
+    return bool(acquired)
+
+
+async def release_alert_lock() -> None:
+    """Only ever call after acquire_alert_lock() returned True — see
+    release_poll_lock's docstring for why."""
+    redis = get_redis()
+    await redis.delete(ALERT_LOCK_KEY)

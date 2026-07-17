@@ -152,4 +152,32 @@ describe('describeAlert', () => {
       describeAlert({ symbol: null, condition_type: 'margin_pct', operator: 'above', threshold: 80 })
     ).toBe('Alert when margin utilization crosses above 80%');
   });
+
+  it('describes a drawdown alert', () => {
+    expect(
+      describeAlert({ symbol: null, condition_type: 'drawdown_pct', operator: 'above', threshold: 20 })
+    ).toBe('Alert when portfolio drawdown crosses above 20%');
+  });
+});
+
+describe('createAlertSchema — drawdown_pct', () => {
+  it('accepts a portfolio-wide drawdown alert', () => {
+    const result = createAlertSchema.safeParse({
+      symbol: null,
+      conditionType: 'drawdown_pct',
+      operator: 'above',
+      threshold: 20,
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('rejects a drawdown alert with a symbol attached', () => {
+    const result = createAlertSchema.safeParse({
+      symbol: 'BTCUSDT',
+      conditionType: 'drawdown_pct',
+      operator: 'above',
+      threshold: 20,
+    });
+    expect(result.success).toBe(false);
+  });
 });

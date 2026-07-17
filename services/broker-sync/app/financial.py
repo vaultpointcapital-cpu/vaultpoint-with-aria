@@ -33,3 +33,44 @@ def calculate_position_value(
 ) -> float:
     price = mark_price if mark_price is not None else entry_price
     return abs(size) * price
+
+
+def calculate_total_pnl(positions: list[dict]) -> float:
+    """Port of src/lib/utils/financial.ts's calculateTotalPnl. Positions
+    with no mark_price yet (just opened, not synced) are skipped, same
+    as the TS version."""
+    total = 0.0
+    for p in positions:
+        if p.get("mark_price") is None:
+            continue
+        total += calculate_position_pnl(p["side"], p["size"], p["entry_price"], p["mark_price"])
+    return total
+
+
+def calculate_net_worth(positions: list[dict], manual_assets: list[dict]) -> float:
+    """Port of src/lib/utils/financial.ts's calculateNetWorth."""
+    positions_value = sum(
+        calculate_position_value(p.get("mark_price"), p["entry_price"], p["size"]) for p in positions
+    )
+    manual_value = sum(a["value"] for a in manual_assets)
+    return positions_value + manual_value
+
+
+def calculate_margin_utilization(margin_used: float, total_equity: float) -> float:
+    """Port of src/lib/utils/financial.ts's calculateMarginUtilization.
+    total_equity is net worth, not just position value — same
+    "margin used against everything you own" meaning as the TS version."""
+    if total_equity <= 0:
+        return 0.0
+    return min(100.0, (margin_used / total_equity) * 100)
+
+
+def calculate_portfolio_pnl_pct(positions: list[dict]) -> float:
+    """Portfolio-wide analog of calculate_position_pnl_pct — no direct TS
+    equivalent exists yet (financial.ts only has the per-position
+    version), so this follows the same shape: total unrealized P&L over
+    total entry value, aggregated instead of per-position."""
+    total_entry_value = sum(p["entry_price"] * p["size"] for p in positions)
+    if total_entry_value == 0:
+        return 0.0
+    return (calculate_total_pnl(positions) / total_entry_value) * 100

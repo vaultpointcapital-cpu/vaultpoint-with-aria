@@ -6,8 +6,16 @@ from datetime import datetime
 import sentry_sdk
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
+from .alert_engine import evaluate_all_alerts as _evaluate_all_alerts
 from .config import settings
-from .redis_cache import acquire_poll_lock, record_poll_heartbeat, release_poll_lock
+from .redis_cache import (
+    acquire_alert_lock,
+    acquire_poll_lock,
+    record_alert_evaluation_heartbeat,
+    record_poll_heartbeat,
+    release_alert_lock,
+    release_poll_lock,
+)
 from .supabase_client import get_service_client
 from .sync_service import BROKER_CLIENTS, sync_connection
 
@@ -68,6 +76,31 @@ async def poll_all_connections() -> None:
         await release_poll_lock()
 
 
+async def evaluate_all_alerts() -> None:
+    """Same lock/heartbeat/logging shape as poll_all_connections, for the
+    Alert Engine's independent job — see acquire_alert_lock's docstring
+    for why this uses its own lock key rather than sharing the poll
+    lock."""
+    if not await acquire_alert_lock():
+        logger.info("Another instance already holds the alert lock — skipping this cycle.")
+        return
+
+    started_at = time.monotonic()
+    logger.info("evaluate_all_alerts: started")
+
+    try:
+        await _evaluate_all_alerts()
+        await record_alert_evaluation_heartbeat()
+    except Exception:
+        logger.exception("evaluate_all_alerts: failed")
+        sentry_sdk.capture_exception()
+        raise
+    finally:
+        duration_seconds = time.monotonic() - started_at
+        logger.info("evaluate_all_alerts: finished in %.2fs", duration_seconds)
+        await release_alert_lock()
+
+
 def start_scheduler() -> None:
     scheduler.add_job(
         poll_all_connections,
@@ -77,5 +110,17 @@ def start_scheduler() -> None:
         next_run_time=datetime.now(),  # run once immediately, then every interval
         max_instances=1,  # don't start a new poll if the previous one is still running
     )
+    scheduler.add_job(
+        evaluate_all_alerts,
+        "interval",
+        seconds=settings.alert_evaluation_interval_seconds,
+        id="evaluate_all_alerts",
+        next_run_time=datetime.now(),
+        max_instances=1,
+    )
     scheduler.start()
-    logger.info("Scheduler started — polling every %ss.", settings.poll_interval_seconds)
+    logger.info(
+        "Scheduler started — polling every %ss, evaluating alerts every %ss.",
+        settings.poll_interval_seconds,
+        settings.alert_evaluation_interval_seconds,
+    )

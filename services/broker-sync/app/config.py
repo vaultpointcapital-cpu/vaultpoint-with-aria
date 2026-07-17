@@ -35,5 +35,25 @@ class Settings(BaseSettings):
     cache_ttl_seconds: int = 55
     sync_rate_limit_seconds: int = 60
 
+    # Alert Engine (Sprint 7-8). Optional so the service still starts
+    # cleanly without email delivery configured — an unset key means
+    # alerts still evaluate and fire (in-app + logged), just without the
+    # email leg.
+    resend_api_key: str | None = None
+    # Sender must be on a domain verified in Resend — see the deployment
+    # workstream's DNS records. No default: an alert email from an
+    # unverified/placeholder address would just bounce or land in spam.
+    alert_email_from: str | None = None
+    # Absolute base URL used to build the "view in app" link in alert
+    # emails — same app, no separate env var already covers this on the
+    # Python side.
+    app_base_url: str = "http://localhost:3000"
+
+    # How long after firing before the same alert can fire again, even if
+    # its condition is still true — prevents spamming on a value
+    # hovering near the threshold. Per spec: 4 hours.
+    alert_cooldown_hours: float = 4
+    alert_evaluation_interval_seconds: int = 60
+
 
 settings = Settings()

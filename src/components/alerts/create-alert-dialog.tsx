@@ -54,7 +54,8 @@ export function CreateAlertDialog({ open, onOpenChange, onCreated }: CreateAlert
   });
 
   const conditionType = watch('conditionType');
-  const thresholdUnit = conditionType === 'pnl_pct' || conditionType === 'margin_pct' ? '%' : '$';
+  const thresholdUnit =
+    conditionType === 'pnl_pct' || conditionType === 'margin_pct' || conditionType === 'drawdown_pct' ? '%' : '$';
 
   function switchTab(next: 'single' | 'portfolio') {
     setTab(next);
@@ -141,6 +142,7 @@ export function CreateAlertDialog({ open, onOpenChange, onCreated }: CreateAlert
                   <option value="pnl_pct">Portfolio P&amp;L (%)</option>
                   <option value="pnl_abs">Portfolio P&amp;L ($)</option>
                   <option value="margin_pct">Margin utilization (%)</option>
+                  <option value="drawdown_pct">Drawdown from peak (%)</option>
                 </select>
               </div>
             </TabsContent>

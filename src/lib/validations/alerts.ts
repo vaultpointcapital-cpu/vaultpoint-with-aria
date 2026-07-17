@@ -11,7 +11,7 @@ import type { SubscriptionTier } from '@/types/database';
 export const createAlertSchema = z
   .object({
     symbol: z.string().trim().toUpperCase().max(20, 'Symbol is too long').nullable(),
-    conditionType: z.enum(['price', 'pnl_pct', 'pnl_abs', 'margin_pct'], {
+    conditionType: z.enum(['price', 'pnl_pct', 'pnl_abs', 'margin_pct', 'drawdown_pct'], {
       errorMap: () => ({ message: 'Select what this alert should watch' }),
     }),
     operator: z.enum(['above', 'below'], {
@@ -78,6 +78,8 @@ export function describeAlert(alert: {
       return `Alert when portfolio P&L ${direction} $${alert.threshold.toLocaleString()}`;
     case 'margin_pct':
       return `Alert when margin utilization ${direction} ${alert.threshold}%`;
+    case 'drawdown_pct':
+      return `Alert when portfolio drawdown ${direction} ${alert.threshold}%`;
     default:
       return `Alert when ${alert.condition_type} ${direction} ${alert.threshold}`;
   }

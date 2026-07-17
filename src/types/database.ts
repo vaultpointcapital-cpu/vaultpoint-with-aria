@@ -12,8 +12,20 @@ export type SyncStatus = 'pending' | 'connected' | 'error' | 'disconnected';
 export type PositionSide = 'long' | 'short' | 'buy' | 'sell';
 export type AssetType = 'bank' | 'property' | 'other';
 export type PodStatus = 'active' | 'completed' | 'archived';
-export type AlertConditionType = 'price' | 'pnl_pct' | 'pnl_abs' | 'margin_pct';
+export type AlertConditionType = 'price' | 'pnl_pct' | 'pnl_abs' | 'margin_pct' | 'drawdown_pct';
 export type AlertOperator = 'above' | 'below';
+export type AriaChannel = 'telegram' | 'web';
+export type AriaRole = 'user' | 'assistant';
+export type AriaMessageType =
+  | 'CHAT'
+  | 'LOSS_WARNING'
+  | 'PROFIT_ALERT'
+  | 'BUY_SIGNAL'
+  | 'PORTFOLIO_REVIEW'
+  | 'MARKET_UPDATE'
+  | 'IDLE_CHECK_IN'
+  | 'RISK_CHECK'
+  | 'COMMUNITY_NUDGE';
 export type PaymentProvider = 'stripe' | 'paystack' | 'flutterwave';
 export type SubscriptionStatus = 'active' | 'past_due' | 'cancelled' | 'trialing';
 export type MtPlatform = 'mt4' | 'mt5';
@@ -144,6 +156,10 @@ export type Alert = {
   operator: AlertOperator;
   threshold: number;
   is_active: boolean;
+  // Set by the Python Alert Engine each time this alert fires — null
+  // means never triggered. See
+  // supabase/migrations/20260717000005_add_alert_engine_cooldown_and_drawdown.sql
+  last_triggered_at: string | null;
   created_at: string;
 };
 
@@ -197,6 +213,21 @@ export type AcademyVideo = {
   display_order: number;
   is_active: boolean;
   published_at: string;
+  created_at: string;
+};
+
+// Not yet applied to any database (local, shadow, or live) — schema
+// only, matching supabase/migrations/20260717000004_add_aria_conversations.sql.
+// Typed here ahead of that migration landing so the Alert Engine's
+// in-app delivery path and the (separately-built) Aria widget share one
+// definition, not two that could drift.
+export type AriaConversation = {
+  id: string;
+  user_id: string;
+  channel: AriaChannel;
+  role: AriaRole;
+  content: string;
+  message_type: AriaMessageType | null;
   created_at: string;
 };
 
@@ -290,7 +321,9 @@ export interface Database {
       };
       alerts: {
         Row: Alert;
-        Insert: Omit<Alert, 'id' | 'created_at'>;
+        // last_triggered_at is set only by the Python Alert Engine's own
+        // update after firing — never by the Next.js create/edit routes.
+        Insert: Omit<Alert, 'id' | 'created_at' | 'last_triggered_at'>;
         Update: Partial<Omit<Alert, 'id' | 'user_id'>>;
         Relationships: [];
       };
@@ -318,6 +351,18 @@ export interface Database {
         // Supabase Table Editor, not through this client. Typed as never
         // rather than omitted so an accidental .insert()/.update() call
         // fails at compile time instead of silently hitting RLS at runtime.
+        Insert: never;
+        Update: never;
+        Relationships: [];
+      };
+      // Not yet applied to any database — see AriaConversation's comment.
+      // Insert typed never here for the same reason as academy_videos:
+      // this table is only ever written by the Python service's
+      // service-role client (Alert Engine in-app delivery, and later the
+      // Aria in-app workstream), never from Next.js — an accidental
+      // client-side .insert() should fail at compile time.
+      aria_conversations: {
+        Row: AriaConversation;
         Insert: never;
         Update: never;
         Relationships: [];
