@@ -102,10 +102,17 @@ def make_fake_metatrader_client(positions=None, provision_error: Exception | Non
 
 @pytest.fixture(autouse=True)
 def no_real_decrypt(monkeypatch):
+    # Threads the iv argument into the output (rather than discarding it)
+    # so tests can assert the *correct, distinct* iv was used per field —
+    # each credential field has its own iv column since the encryption_iv
+    # reconciliation (see supabase/migrations/
+    # 20260717000001_reconcile_remaining_tables_with_live.sql), and a test
+    # that ignored iv here couldn't catch a bug that cross-wired
+    # api_key_iv/api_secret_iv.
     monkeypatch.setattr(
         sync_service,
         "decrypt",
-        lambda ciphertext, iv: f"decrypted:{ciphertext}",
+        lambda ciphertext, iv: f"decrypted:{ciphertext}:{iv}",
     )
 
 
@@ -187,6 +194,52 @@ async def test_sync_connection_normalizes_caches_and_upserts(monkeypatch, fake_s
     assert connection_updates[0].values["last_synced_at"] is not None
 
     assert len(fake_supabase.calls_for("portfolio_snapshots", "insert")) == 1
+
+
+async def test_sync_connection_uses_each_credential_field_own_iv(monkeypatch, fake_supabase, fake_cache):
+    """Regression guard for the encryption_iv reconciliation: api_key and
+    api_secret must each be decrypted with their own iv column, never a
+    shared or cross-wired one. CONNECTION fixture's key/secret ciphertexts
+    and ivs are deliberately distinct ("ciphertext-key"/"iv-key" vs.
+    "ciphertext-secret"/"iv-secret") specifically so a swap bug (e.g.
+    passing api_secret_iv to decrypt the api key) would produce a visibly
+    wrong value here rather than passing by coincidence.
+    """
+    captured = {}
+
+    def _capturing_client(api_key, api_secret, api_passphrase=None):
+        captured["api_key"] = api_key
+        captured["api_secret"] = api_secret
+        return make_fake_client(positions=[])(api_key, api_secret, api_passphrase)
+
+    monkeypatch.setitem(sync_service.BROKER_CLIENTS, BrokerType.BYBIT, _capturing_client)
+    fake_supabase.select_responses[("positions", "id, symbol, side")] = []
+    fake_supabase.select_responses[("portfolio_snapshots", "id")] = [{"id": "already-exists"}]
+
+    await sync_service.sync_connection(CONNECTION)
+
+    assert captured["api_key"] == "decrypted:ciphertext-key:iv-key"
+    assert captured["api_secret"] == "decrypted:ciphertext-secret:iv-secret"
+
+
+async def test_sync_connection_metatrader_password_uses_its_own_iv(monkeypatch, fake_supabase, fake_cache):
+    captured = {}
+
+    def _capturing_metatrader_client(login, password, server, platform, metaapi_token, account_id=None, region=None):
+        captured["password"] = password
+        return make_fake_metatrader_client(positions=[])(
+            login, password, server, platform, metaapi_token, account_id, region
+        )
+
+    monkeypatch.setattr(sync_service, "MetaTraderClient", _capturing_metatrader_client)
+    monkeypatch.setattr(sync_service.settings, "metaapi_token", "fake-metaapi-token")
+    connection = {**METATRADER_CONNECTION, "metaapi_account_id": "already-provisioned", "metaapi_region": "london"}
+    fake_supabase.select_responses[("positions", "id, symbol, side")] = []
+    fake_supabase.select_responses[("portfolio_snapshots", "id")] = [{"id": "already-exists"}]
+
+    await sync_service.sync_connection(connection)
+
+    assert captured["password"] == "decrypted:ciphertext-mt-password:iv-mt-password"
 
 
 async def test_sync_connection_deletes_only_stale_positions(monkeypatch, fake_supabase, fake_cache):
@@ -317,7 +370,7 @@ async def test_sync_connection_routes_kucoin_connections_and_decrypts_passphrase
 
     await sync_service.sync_connection(connection)
 
-    assert captured_passphrase["value"] == "decrypted:ciphertext-passphrase"
+    assert captured_passphrase["value"] == "decrypted:ciphertext-passphrase:iv-passphrase"
 
     upserts = fake_supabase.calls_for("positions", "upsert")
     assert len(upserts) == 1
