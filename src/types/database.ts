@@ -160,13 +160,30 @@ export type AlertHistoryEntry = {
 export type Subscription = {
   id: string;
   user_id: string;
-  payment_provider: PaymentProvider;
-  provider_subscription_id: string;
-  tier: 'pro' | 'elite';
+  // Nullable pre-checkout: a fresh row created for bookkeeping (or the
+  // implicit "no subscriptions row = free tier" case handled in
+  // getUserTier) has no provider attached yet.
+  payment_provider: PaymentProvider | null;
+  provider_subscription_id: string | null;
+  // Stripe customer id / Paystack customer code — set on first successful
+  // checkout, used to match later renewal/cancellation webhook events.
+  provider_customer_id: string | null;
+  tier: SubscriptionTier;
   status: SubscriptionStatus;
   current_period_end: string | null;
   created_at: string;
   updated_at: string;
+};
+
+export type BillingWebhookEvent = {
+  id: string;
+  provider: 'stripe' | 'paystack';
+  event_id: string;
+  event_type: string;
+  // Non-sensitive metadata only — never the raw webhook payload. See
+  // supabase/migrations/20260717000000_reconcile_subscriptions_for_billing.sql
+  metadata: Record<string, unknown>;
+  processed_at: string;
 };
 
 export type AcademyVideo = {
@@ -287,6 +304,12 @@ export interface Database {
         Row: Subscription;
         Insert: Omit<Subscription, 'id' | 'created_at' | 'updated_at'>;
         Update: Partial<Omit<Subscription, 'id' | 'user_id'>>;
+        Relationships: [];
+      };
+      billing_webhook_events: {
+        Row: BillingWebhookEvent;
+        Insert: Omit<BillingWebhookEvent, 'id' | 'processed_at'>;
+        Update: never; // append-only audit log
         Relationships: [];
       };
       academy_videos: {

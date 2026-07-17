@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { TIER_LIMITS } from '@/lib/billing/tier-limits';
 import type { SubscriptionTier } from '@/types/database';
 
 export const createPodSchema = z.object({
@@ -25,14 +26,16 @@ export const contributeToPodSchema = z.object({
 export type ContributeToPodInput = z.infer<typeof contributeToPodSchema>;
 
 /**
- * Tier limits per the PM spec: Free = 1 pod, Pro = 10, Elite = unlimited.
- * Centralized here so the limit is defined once and checked identically
- * everywhere it matters (API route, UI "add pod" button disabled state).
+ * Free = 1 pod, Pro = 10, Elite = unlimited. Sourced from
+ * lib/billing/tier-limits.ts's TIER_LIMITS — the single source of truth
+ * across every tier-gated feature, not just Pods. Re-exported under this
+ * name so the API route and UI "add pod" disabled-state check don't need
+ * to change.
  */
 export const POD_LIMITS_BY_TIER: Record<SubscriptionTier, number> = {
-  free: 1,
-  pro: 10,
-  elite: Infinity,
+  free: TIER_LIMITS.free.maxPods,
+  pro: TIER_LIMITS.pro.maxPods,
+  elite: TIER_LIMITS.elite.maxPods,
 };
 
 export function canCreateAnotherPod(tier: SubscriptionTier, currentPodCount: number): boolean {
