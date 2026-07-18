@@ -35,6 +35,7 @@ export type SignalDirection = 'long' | 'short';
 export type SignalConfidence = 'low' | 'medium' | 'high';
 export type SignalStatus = 'active' | 'closed' | 'invalidated';
 export type SignalActionType = 'executed' | 'skipped' | 'ignored' | 'failed';
+export type SignalActionInitiator = 'user' | 'aria';
 export type SignalOutcomeResult = 'win' | 'loss' | 'breakeven';
 
 // Every domain model below is a `type` alias, not an `interface` — a real
@@ -88,6 +89,13 @@ export type BrokerConnection = {
   // is_read_only = false. See
   // supabase/migrations/20260718000000_add_signal_mode.sql.
   trade_execution_enabled: boolean;
+  // Managed Mode (autonomous execution) — DB CHECK-constrained to require
+  // trade_execution_enabled=true plus every risk field below being set.
+  // See supabase/migrations/20260718000002_add_managed_mode.sql.
+  managed_mode_enabled: boolean;
+  managed_mode_risk_pct: number | null;
+  managed_mode_daily_loss_limit_pct: number | null;
+  managed_mode_consented_at: string | null;
   sync_status: SyncStatus;
   last_synced_at: string | null;
   last_error: string | null;
@@ -270,6 +278,10 @@ export type SignalAction = {
   // Populated only when action = 'failed' — see
   // 20260718000001_add_failed_signal_action.sql.
   failure_reason: string | null;
+  // 'aria' only for Managed Mode autonomous executions — every row this
+  // app's own API routes insert defaults to 'user'. See
+  // 20260718000002_add_managed_mode.sql.
+  initiated_by: SignalActionInitiator;
   created_at: string;
 };
 
@@ -315,6 +327,8 @@ export interface Database {
         // defaults to false at the DB level (see
         // 20260718000000_add_signal_mode.sql) — the connection-creation
         // route never sets it true; only the re-authorization route does.
+        // managed_mode_* all default to false/null (20260718000002) — only
+        // the Managed Mode opt-in route ever sets them.
         Insert: Omit<
           BrokerConnection,
           | 'id'
@@ -325,12 +339,20 @@ export interface Database {
           | 'last_synced_at'
           | 'last_error'
           | 'trade_execution_enabled'
+          | 'managed_mode_enabled'
+          | 'managed_mode_risk_pct'
+          | 'managed_mode_daily_loss_limit_pct'
+          | 'managed_mode_consented_at'
         > & {
           metaapi_account_id?: string | null;
           metaapi_region?: string | null;
           last_synced_at?: string | null;
           last_error?: string | null;
           trade_execution_enabled?: boolean;
+          managed_mode_enabled?: boolean;
+          managed_mode_risk_pct?: number | null;
+          managed_mode_daily_loss_limit_pct?: number | null;
+          managed_mode_consented_at?: string | null;
         };
         Update: Partial<Omit<BrokerConnection, 'id' | 'user_id'>>;
         Relationships: [];
@@ -445,7 +467,12 @@ export interface Database {
       // DELETE policy exists — an action, once taken, is final.
       signal_actions: {
         Row: SignalAction;
-        Insert: Omit<SignalAction, 'id' | 'created_at'>;
+        // initiated_by defaults to 'user' at the DB level (20260718000002)
+        // — only app/managed_mode.py's autonomous-execution inserts ever
+        // pass 'aria' explicitly.
+        Insert: Omit<SignalAction, 'id' | 'created_at' | 'initiated_by'> & {
+          initiated_by?: SignalActionInitiator;
+        };
         Update: never;
         Relationships: [];
       };
