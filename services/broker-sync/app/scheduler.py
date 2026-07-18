@@ -8,12 +8,16 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from .alert_engine import evaluate_all_alerts as _evaluate_all_alerts
 from .config import settings
+from .managed_mode import evaluate_managed_mode as _evaluate_managed_mode
 from .redis_cache import (
     acquire_alert_lock,
+    acquire_managed_mode_lock,
     acquire_poll_lock,
     record_alert_evaluation_heartbeat,
+    record_managed_mode_evaluation_heartbeat,
     record_poll_heartbeat,
     release_alert_lock,
+    release_managed_mode_lock,
     release_poll_lock,
 )
 from .supabase_client import get_service_client
@@ -101,6 +105,34 @@ async def evaluate_all_alerts() -> None:
         await release_alert_lock()
 
 
+async def evaluate_managed_mode() -> None:
+    """Same lock/heartbeat/logging shape as the other two jobs. This is
+    the highest-stakes cycle in the service — see managed_mode.py's
+    module docstring — but the operational safety net (single-instance
+    lock during deploy overlaps, liveness heartbeat, log-and-continue on
+    a cycle-level failure) is identical to poll_all_connections and
+    evaluate_all_alerts, not something this job needs its own variant of.
+    """
+    if not await acquire_managed_mode_lock():
+        logger.info("Another instance already holds the managed mode lock — skipping this cycle.")
+        return
+
+    started_at = time.monotonic()
+    logger.info("evaluate_managed_mode: started")
+
+    try:
+        await _evaluate_managed_mode()
+        await record_managed_mode_evaluation_heartbeat()
+    except Exception:
+        logger.exception("evaluate_managed_mode: failed")
+        sentry_sdk.capture_exception()
+        raise
+    finally:
+        duration_seconds = time.monotonic() - started_at
+        logger.info("evaluate_managed_mode: finished in %.2fs", duration_seconds)
+        await release_managed_mode_lock()
+
+
 def start_scheduler() -> None:
     scheduler.add_job(
         poll_all_connections,
@@ -118,9 +150,19 @@ def start_scheduler() -> None:
         next_run_time=datetime.now(),
         max_instances=1,
     )
+    scheduler.add_job(
+        evaluate_managed_mode,
+        "interval",
+        seconds=settings.managed_mode_evaluation_interval_seconds,
+        id="evaluate_managed_mode",
+        next_run_time=datetime.now(),
+        max_instances=1,
+    )
     scheduler.start()
     logger.info(
-        "Scheduler started — polling every %ss, evaluating alerts every %ss.",
+        "Scheduler started — polling every %ss, evaluating alerts every %ss, "
+        "evaluating managed mode every %ss.",
         settings.poll_interval_seconds,
         settings.alert_evaluation_interval_seconds,
+        settings.managed_mode_evaluation_interval_seconds,
     )

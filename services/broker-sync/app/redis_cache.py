@@ -9,8 +9,10 @@ _redis = Redis(url=settings.upstash_redis_rest_url, token=settings.upstash_redis
 
 LAST_POLL_KEY = "health:last_successful_poll"
 LAST_ALERT_EVAL_KEY = "health:last_alert_evaluation"
+LAST_MANAGED_MODE_EVAL_KEY = "health:last_managed_mode_evaluation"
 POLL_LOCK_KEY = "lock:poll_all_connections"
 ALERT_LOCK_KEY = "lock:evaluate_all_alerts"
+MANAGED_MODE_LOCK_KEY = "lock:evaluate_managed_mode"
 # Safety margin above a normal cycle's expected duration. The lock is
 # explicitly released at the end of a well-behaved cycle (see
 # release_poll_lock) — this TTL only matters if a holder crashes or hangs
@@ -97,3 +99,28 @@ async def release_alert_lock() -> None:
     release_poll_lock's docstring for why."""
     redis = get_redis()
     await redis.delete(ALERT_LOCK_KEY)
+
+
+async def record_managed_mode_evaluation_heartbeat() -> None:
+    await _redis.set(LAST_MANAGED_MODE_EVAL_KEY, datetime.now(UTC).isoformat())
+
+
+async def get_last_managed_mode_evaluation_heartbeat() -> str | None:
+    return await _redis.get(LAST_MANAGED_MODE_EVAL_KEY)
+
+
+async def acquire_managed_mode_lock() -> bool:
+    """Same reasoning as acquire_poll_lock — a distinct lock key so this,
+    the highest-stakes job in the service, can never run twice
+    concurrently across overlapping deploy instances."""
+    redis = get_redis()
+    ttl = settings.managed_mode_evaluation_interval_seconds + POLL_LOCK_TTL_BUFFER_SECONDS
+    acquired = await redis.set(MANAGED_MODE_LOCK_KEY, "1", nx=True, ex=ttl)
+    return bool(acquired)
+
+
+async def release_managed_mode_lock() -> None:
+    """Only ever call after acquire_managed_mode_lock() returned True —
+    see release_poll_lock's docstring for why."""
+    redis = get_redis()
+    await redis.delete(MANAGED_MODE_LOCK_KEY)

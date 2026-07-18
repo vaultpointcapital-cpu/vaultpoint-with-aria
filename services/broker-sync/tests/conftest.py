@@ -49,6 +49,10 @@ class FakeQuery:
         self.filters.append(("neq", col, val))
         return self
 
+    def gte(self, col, val):
+        self.filters.append(("gte", col, val))
+        return self
+
     def limit(self, n):
         return self
 

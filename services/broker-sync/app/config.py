@@ -55,5 +55,11 @@ class Settings(BaseSettings):
     alert_cooldown_hours: float = 4
     alert_evaluation_interval_seconds: int = 60
 
+    # Managed Mode (Signal Mode Part 2 — autonomous execution). Same
+    # cadence as the other two jobs by default; kept as its own setting
+    # since this is the highest-stakes cycle in the service and may need
+    # independent tuning without touching poll/alert timing.
+    managed_mode_evaluation_interval_seconds: int = 60
+
 
 settings = Settings()
