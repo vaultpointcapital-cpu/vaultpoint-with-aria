@@ -57,6 +57,10 @@ export type User = {
   subscription_tier: SubscriptionTier;
   academy_student: boolean;
   onboarding_completed: boolean;
+  // Gates internal-only routes (Managed Accounts compliance dashboard,
+  // audit export) — set directly via Table Editor, no self-service UI
+  // grants this. See 20260718000004_add_managed_accounts.sql.
+  is_admin: boolean;
   created_at: string;
   updated_at: string;
 };
@@ -241,6 +245,110 @@ export type ProfitShareCharge = {
   provider_charge_id: string | null;
   status: ProfitShareStatus;
   failure_reason: string | null;
+  created_at: string;
+};
+
+// ----------------------------------------------------------------------------
+// VaultPoint Managed Accounts — custodial managed-trading product, a
+// different regulatory category from Signal Mode / Managed Mode (which
+// never take custody of anyone's money). See
+// supabase/migrations/20260718000004_add_managed_accounts.sql.
+// ----------------------------------------------------------------------------
+
+// Placeholder tier set — the spec's own PRD Section 6 (Managed Tier
+// definitions) was not available when this migration was written.
+export type ManagedTier = 'bronze' | 'silver' | 'gold';
+export type ManagedAccountStatus = 'pending_kyc' | 'pending_authorization' | 'pending_funding' | 'active' | 'closed';
+export type KycStatus = 'pending' | 'verified' | 'rejected';
+export type WithdrawalWindowCadence = 'monthly' | 'biweekly' | 'on_demand';
+export type ManagedTradeSide = 'long' | 'short';
+export type ProfitDistributionStatus = 'pending' | 'confirmed' | 'paid' | 'failed';
+export type SignatureMethod = 'checkbox_and_typed_name';
+
+export type DisclosureView = {
+  id: string;
+  user_id: string;
+  document_version: string;
+  viewed_at: string;
+  scrolled_to_bottom_at: string | null;
+  created_at: string;
+};
+
+export type ClientAuthorization = {
+  id: string;
+  user_id: string;
+  document_version: string;
+  document_url: string;
+  typed_legal_name: string;
+  signed_at: string;
+  ip_address: string | null;
+  signature_method: SignatureMethod;
+  revoked_at: string | null;
+  created_at: string;
+};
+
+export type ManagedAccount = {
+  id: string;
+  user_id: string;
+  tier: ManagedTier;
+  profit_split_pct: number;
+  max_drawdown_pct: number;
+  withdrawal_window_cadence: WithdrawalWindowCadence;
+  next_withdrawal_window_date: string | null;
+  client_authorization_id: string | null;
+  kyc_status: KycStatus;
+  kyc_verified_at: string | null;
+  broker: 'bybit' | 'metatrader';
+  // Same encrypted-at-rest pattern as broker_connections, deliberately
+  // NOT stored in that table — see this migration's comment on why a
+  // managed sub-account has a different trust model.
+  encrypted_api_key: string | null;
+  api_key_iv: string | null;
+  encrypted_api_secret: string | null;
+  api_secret_iv: string | null;
+  mt_login: string | null;
+  mt_server: string | null;
+  mt_platform: MtPlatform | null;
+  encrypted_mt_password: string | null;
+  mt_password_iv: string | null;
+  metaapi_account_id: string | null;
+  metaapi_region: string | null;
+  status: ManagedAccountStatus;
+  starting_capital: number | null;
+  current_balance: number | null;
+  requires_disclosure_reconfirmation: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ManagedTrade = {
+  id: string;
+  managed_account_id: string;
+  symbol: string;
+  side: ManagedTradeSide;
+  size: number;
+  entry_price: number;
+  exit_price: number | null;
+  realized_pnl: number | null;
+  opened_at: string;
+  closed_at: string | null;
+  created_at: string;
+};
+
+export type ProfitDistribution = {
+  id: string;
+  managed_account_id: string;
+  period_start: string;
+  period_end: string;
+  gross_pnl: number;
+  client_share: number;
+  vaultpoint_share: number;
+  payout_method: string | null;
+  status: ProfitDistributionStatus;
+  statement_pdf_url: string | null;
+  requested_at: string | null;
+  confirmed_at: string | null;
+  paid_at: string | null;
   created_at: string;
 };
 
@@ -466,6 +574,37 @@ export interface Database {
         Row: ProfitShareCharge;
         Insert: Omit<ProfitShareCharge, 'id' | 'created_at'>;
         Update: never; // a period's outcome, once recorded, is final — rerun as a new period instead
+        Relationships: [];
+      };
+      // Append-only audit log — no update/delete policy for any role.
+      disclosure_views: {
+        Row: DisclosureView;
+        Insert: Omit<DisclosureView, 'id' | 'created_at'>;
+        Update: never;
+        Relationships: [];
+      };
+      client_authorizations: {
+        Row: ClientAuthorization;
+        Insert: Omit<ClientAuthorization, 'id' | 'created_at'>;
+        Update: never; // a signed authorization is immutable — revoke via revoked_at through a dedicated flow, not a raw update
+        Relationships: [];
+      };
+      managed_accounts: {
+        Row: ManagedAccount;
+        Insert: Omit<ManagedAccount, 'id' | 'created_at' | 'updated_at'>;
+        Update: Partial<Omit<ManagedAccount, 'id' | 'user_id'>>;
+        Relationships: [];
+      };
+      managed_trades: {
+        Row: ManagedTrade;
+        Insert: Omit<ManagedTrade, 'id' | 'created_at'>;
+        Update: never; // a closed trade's record is final
+        Relationships: [];
+      };
+      profit_distributions: {
+        Row: ProfitDistribution;
+        Insert: Omit<ProfitDistribution, 'id' | 'created_at'>;
+        Update: Partial<Omit<ProfitDistribution, 'id' | 'managed_account_id' | 'period_start' | 'period_end'>>;
         Relationships: [];
       };
       academy_videos: {
