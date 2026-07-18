@@ -6,7 +6,7 @@ import { Trash2 } from 'lucide-react';
 import { Card } from '@/components/ui/card';
 import { cn } from '@/lib/utils/cn';
 import type { BrokerConnectionSummary } from '@/components/brokers/types';
-import type { BrokerType, SyncStatus } from '@/types/database';
+import type { BrokerType, SubscriptionTier, SyncStatus } from '@/types/database';
 
 const BROKER_LABELS: Record<BrokerType, string> = {
   bybit: 'Bybit',
@@ -31,16 +31,36 @@ const STATUS_LABELS: Record<SyncStatus, string> = {
 
 interface BrokerConnectionCardProps {
   connection: BrokerConnectionSummary;
+  subscriptionTier: SubscriptionTier;
   onDisconnect: (id: string) => Promise<void>;
   onAuthorizeExecutionClick: (connection: BrokerConnectionSummary) => void;
+  onManagedModeClick: (connection: BrokerConnectionSummary) => void;
+  onDisableManagedMode: (id: string) => Promise<void>;
 }
 
 export function BrokerConnectionCard({
   connection,
+  subscriptionTier,
   onDisconnect,
   onAuthorizeExecutionClick,
+  onManagedModeClick,
+  onDisableManagedMode,
 }: BrokerConnectionCardProps) {
   const [isDisconnecting, setIsDisconnecting] = useState(false);
+  const [isDisablingManagedMode, setIsDisablingManagedMode] = useState(false);
+
+  async function handleDisableManagedMode() {
+    if (
+      !window.confirm(
+        `Disable Managed Mode on ${connection.label}? Aria will stop placing trades automatically on this connection immediately.`
+      )
+    ) {
+      return;
+    }
+    setIsDisablingManagedMode(true);
+    await onDisableManagedMode(connection.id);
+    setIsDisablingManagedMode(false);
+  }
 
   async function handleDisconnect() {
     if (!window.confirm(`Disconnect ${connection.label}? VaultPoint will stop syncing this account.`)) {
@@ -90,6 +110,39 @@ export function BrokerConnectionCard({
           >
             Authorize for trade execution
           </button>
+        )}
+
+        {/* Managed Mode is Elite-only and requires trade execution to
+            already be authorized on this connection — matches the DB
+            CHECK constraint (20260718000002_add_managed_mode.sql) and
+            the API route's own tier check, not just a UI-side gate. */}
+        {connection.trade_execution_enabled && subscriptionTier === 'elite' && (
+          <div className="mt-1">
+            {connection.managed_mode_enabled ? (
+              <div className="flex items-center gap-2">
+                <p className="text-xs font-medium text-success">
+                  Managed Mode active — risking {connection.managed_mode_risk_pct}% per trade, daily
+                  loss limit {connection.managed_mode_daily_loss_limit_pct}%
+                </p>
+                <button
+                  type="button"
+                  onClick={handleDisableManagedMode}
+                  disabled={isDisablingManagedMode}
+                  className="text-xs font-medium text-warning hover:underline disabled:opacity-50"
+                >
+                  Disable
+                </button>
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={() => onManagedModeClick(connection)}
+                className="text-xs font-medium text-accent hover:underline"
+              >
+                Enable Managed Mode
+              </button>
+            )}
+          </div>
         )}
       </div>
 

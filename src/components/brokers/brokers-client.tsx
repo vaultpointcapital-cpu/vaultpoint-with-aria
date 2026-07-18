@@ -6,20 +6,34 @@ import { Link2, RefreshCw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { BrokerConnectionCard } from '@/components/brokers/broker-connection-card';
 import { ReauthorizeConnectionDialog } from '@/components/brokers/reauthorize-connection-dialog';
+import { ManagedModeDialog } from '@/components/brokers/managed-mode-dialog';
 import type { BrokerConnectionSummary } from '@/components/brokers/types';
+import type { SubscriptionTier } from '@/types/database';
 
 interface BrokersClientProps {
   initialConnections: BrokerConnectionSummary[];
+  subscriptionTier: SubscriptionTier;
 }
 
-export function BrokersClient({ initialConnections }: BrokersClientProps) {
+export function BrokersClient({ initialConnections, subscriptionTier }: BrokersClientProps) {
   const [connections, setConnections] = useState<BrokerConnectionSummary[]>(initialConnections);
   const [isSyncing, setIsSyncing] = useState(false);
   const [syncMessage, setSyncMessage] = useState<string | null>(null);
   const [authorizeTarget, setAuthorizeTarget] = useState<BrokerConnectionSummary | null>(null);
+  const [managedModeTarget, setManagedModeTarget] = useState<BrokerConnectionSummary | null>(null);
 
   function handleReauthorized(updated: BrokerConnectionSummary) {
     setConnections((prev) => prev.map((c) => (c.id === updated.id ? { ...c, ...updated } : c)));
+  }
+
+  function handleManagedModeEnabled(updated: BrokerConnectionSummary) {
+    setConnections((prev) => prev.map((c) => (c.id === updated.id ? { ...c, ...updated } : c)));
+  }
+
+  async function handleDisableManagedMode(id: string) {
+    const res = await fetch(`/api/brokers/${id}/managed-mode`, { method: 'DELETE' });
+    if (!res.ok) return;
+    setConnections((prev) => prev.map((c) => (c.id === id ? { ...c, managed_mode_enabled: false } : c)));
   }
 
   async function refetchConnections() {
@@ -114,8 +128,11 @@ export function BrokersClient({ initialConnections }: BrokersClientProps) {
           <BrokerConnectionCard
             key={connection.id}
             connection={connection}
+            subscriptionTier={subscriptionTier}
             onDisconnect={handleDisconnect}
             onAuthorizeExecutionClick={setAuthorizeTarget}
+            onManagedModeClick={setManagedModeTarget}
+            onDisableManagedMode={handleDisableManagedMode}
           />
         ))}
       </div>
@@ -126,6 +143,14 @@ export function BrokersClient({ initialConnections }: BrokersClientProps) {
           if (!open) setAuthorizeTarget(null);
         }}
         onReauthorized={handleReauthorized}
+      />
+
+      <ManagedModeDialog
+        connection={managedModeTarget}
+        onOpenChange={(open) => {
+          if (!open) setManagedModeTarget(null);
+        }}
+        onEnabled={handleManagedModeEnabled}
       />
     </div>
   );

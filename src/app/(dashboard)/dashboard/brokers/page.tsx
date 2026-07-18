@@ -11,13 +11,21 @@ export default async function BrokersPage() {
     return null;
   }
 
-  const { data } = await supabase
-    .from('broker_connections')
-    .select(
-      'id, broker, label, is_read_only, trade_execution_enabled, sync_status, last_synced_at, last_error, created_at'
-    )
-    .eq('user_id', authData.user.id)
-    .order('created_at', { ascending: false });
+  const [connectionsResult, profileResult] = await Promise.all([
+    supabase
+      .from('broker_connections')
+      .select(
+        'id, broker, label, is_read_only, trade_execution_enabled, managed_mode_enabled, managed_mode_risk_pct, managed_mode_daily_loss_limit_pct, sync_status, last_synced_at, last_error, created_at'
+      )
+      .eq('user_id', authData.user.id)
+      .order('created_at', { ascending: false }),
+    supabase.from('users').select('subscription_tier').eq('id', authData.user.id).single(),
+  ]);
 
-  return <BrokersClient initialConnections={data ?? []} />;
+  return (
+    <BrokersClient
+      initialConnections={connectionsResult.data ?? []}
+      subscriptionTier={profileResult.data?.subscription_tier ?? 'free'}
+    />
+  );
 }

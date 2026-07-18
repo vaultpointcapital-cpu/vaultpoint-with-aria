@@ -124,3 +124,33 @@ export const reauthorizeBrokerConnectionSchema = z
   });
 
 export type ReauthorizeBrokerConnectionInput = z.infer<typeof reauthorizeBrokerConnectionSchema>;
+
+/**
+ * Opting a connection into Managed Mode (autonomous execution — see
+ * supabase/migrations/20260718000002_add_managed_mode.sql). The bounds
+ * here mirror that migration's own CHECK constraint exactly (risk 0-5%,
+ * daily loss limit 0-20%) — duplicated deliberately so a user gets an
+ * immediate, specific validation message instead of a raw Postgres
+ * constraint-violation error if they somehow submit an out-of-range
+ * value past client-side validation.
+ *
+ * consent must be the literal boolean true — this is the field the
+ * explicit consent checkbox binds to; managed_mode_consented_at is set
+ * server-side to the current time only when this parses successfully,
+ * never client-supplied.
+ */
+export const managedModeOptInSchema = z.object({
+  riskPct: z.coerce
+    .number()
+    .positive('Risk per trade must be greater than 0%')
+    .max(5, 'Risk per trade cannot exceed 5% (VaultPoint-enforced maximum)'),
+  dailyLossLimitPct: z.coerce
+    .number()
+    .positive('Daily loss limit must be greater than 0%')
+    .max(20, 'Daily loss limit cannot exceed 20% (VaultPoint-enforced maximum)'),
+  consent: z.literal(true, {
+    errorMap: () => ({ message: 'You must acknowledge that Aria will place trades automatically' }),
+  }),
+});
+
+export type ManagedModeOptInInput = z.infer<typeof managedModeOptInSchema>;

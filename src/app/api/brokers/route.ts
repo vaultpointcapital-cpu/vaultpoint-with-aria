@@ -21,7 +21,7 @@ export async function GET() {
   const { data, error } = await supabase
     .from('broker_connections')
     .select(
-      'id, broker, label, is_read_only, trade_execution_enabled, sync_status, last_synced_at, last_error, created_at'
+      'id, broker, label, is_read_only, trade_execution_enabled, managed_mode_enabled, managed_mode_risk_pct, managed_mode_daily_loss_limit_pct, sync_status, last_synced_at, last_error, created_at'
     )
     .eq('user_id', authData.user.id)
     .order('created_at', { ascending: false });
