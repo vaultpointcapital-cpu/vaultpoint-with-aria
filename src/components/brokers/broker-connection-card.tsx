@@ -32,9 +32,14 @@ const STATUS_LABELS: Record<SyncStatus, string> = {
 interface BrokerConnectionCardProps {
   connection: BrokerConnectionSummary;
   onDisconnect: (id: string) => Promise<void>;
+  onAuthorizeExecutionClick: (connection: BrokerConnectionSummary) => void;
 }
 
-export function BrokerConnectionCard({ connection, onDisconnect }: BrokerConnectionCardProps) {
+export function BrokerConnectionCard({
+  connection,
+  onDisconnect,
+  onAuthorizeExecutionClick,
+}: BrokerConnectionCardProps) {
   const [isDisconnecting, setIsDisconnecting] = useState(false);
 
   async function handleDisconnect() {
@@ -73,6 +78,18 @@ export function BrokerConnectionCard({ connection, onDisconnect }: BrokerConnect
 
         {connection.sync_status === 'error' && connection.last_error && (
           <p className="mt-1.5 max-w-md text-xs text-warning">{connection.last_error}</p>
+        )}
+
+        {connection.trade_execution_enabled ? (
+          <p className="mt-1.5 text-xs font-medium text-success">Authorized for Signal Mode execution</p>
+        ) : (
+          <button
+            type="button"
+            onClick={() => onAuthorizeExecutionClick(connection)}
+            className="mt-1.5 text-xs font-medium text-accent hover:underline"
+          >
+            Authorize for trade execution
+          </button>
         )}
       </div>
 

@@ -9,5 +9,13 @@ import type { BrokerConnection } from '@/types/database';
  */
 export type BrokerConnectionSummary = Pick<
   BrokerConnection,
-  'id' | 'broker' | 'label' | 'is_read_only' | 'sync_status' | 'last_synced_at' | 'last_error' | 'created_at'
+  | 'id'
+  | 'broker'
+  | 'label'
+  | 'is_read_only'
+  | 'trade_execution_enabled'
+  | 'sync_status'
+  | 'last_synced_at'
+  | 'last_error'
+  | 'created_at'
 >;

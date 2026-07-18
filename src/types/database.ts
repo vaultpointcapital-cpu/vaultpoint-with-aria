@@ -31,6 +31,11 @@ export type SubscriptionStatus = 'active' | 'past_due' | 'cancelled' | 'trialing
 export type MtPlatform = 'mt4' | 'mt5';
 export type VideoProvider = 'youtube' | 'vimeo';
 export type VideoType = 'long_form' | 'daily_short';
+export type SignalDirection = 'long' | 'short';
+export type SignalConfidence = 'low' | 'medium' | 'high';
+export type SignalStatus = 'active' | 'closed' | 'invalidated';
+export type SignalActionType = 'executed' | 'skipped' | 'ignored' | 'failed';
+export type SignalOutcomeResult = 'win' | 'loss' | 'breakeven';
 
 // Every domain model below is a `type` alias, not an `interface` — a real
 // TypeScript quirk, not a style choice: interfaces don't get an implicit
@@ -79,6 +84,10 @@ export type BrokerConnection = {
   metaapi_account_id: string | null;
   metaapi_region: string | null;
   is_read_only: boolean;
+  // Signal Mode execution gate — DB CHECK-constrained to require
+  // is_read_only = false. See
+  // supabase/migrations/20260718000000_add_signal_mode.sql.
+  trade_execution_enabled: boolean;
   sync_status: SyncStatus;
   last_synced_at: string | null;
   last_error: string | null;
@@ -231,6 +240,48 @@ export type AriaConversation = {
   created_at: string;
 };
 
+// Signal Mode. Matches supabase/migrations/20260718000000_add_signal_mode.sql
+// and 20260718000001_add_failed_signal_action.sql exactly.
+
+export type Signal = {
+  id: string;
+  pair: string;
+  direction: SignalDirection;
+  entry_price: number;
+  stop_loss: number;
+  take_profit: number;
+  risk_reward_ratio: number;
+  rationale: string;
+  confidence: SignalConfidence | null;
+  min_tier: SubscriptionTier;
+  status: SignalStatus;
+  created_at: string;
+  closed_at: string | null;
+};
+
+export type SignalAction = {
+  id: string;
+  signal_id: string;
+  user_id: string;
+  broker_connection_id: string | null;
+  action: SignalActionType;
+  executed_size: number | null;
+  broker_order_id: string | null;
+  // Populated only when action = 'failed' — see
+  // 20260718000001_add_failed_signal_action.sql.
+  failure_reason: string | null;
+  created_at: string;
+};
+
+export type SignalOutcome = {
+  id: string;
+  signal_action_id: string;
+  result: SignalOutcomeResult;
+  realized_pnl: number;
+  realized_r_multiple: number | null;
+  closed_at: string;
+};
+
 // ----------------------------------------------------------------------------
 // Supabase Database type — used to type the Supabase client generically.
 // Mirrors the shape `supabase gen types typescript` would produce.
@@ -260,15 +311,26 @@ export interface Database {
         // metaapi_account_id/region are set later by the Python poller
         // (see supabase/migrations/20260716000001_add_metatrader_support.sql),
         // last_synced_at/last_error start null — none of the four are set
-        // by the Next.js connection-creation route.
+        // by the Next.js connection-creation route. trade_execution_enabled
+        // defaults to false at the DB level (see
+        // 20260718000000_add_signal_mode.sql) — the connection-creation
+        // route never sets it true; only the re-authorization route does.
         Insert: Omit<
           BrokerConnection,
-          'id' | 'created_at' | 'updated_at' | 'metaapi_account_id' | 'metaapi_region' | 'last_synced_at' | 'last_error'
+          | 'id'
+          | 'created_at'
+          | 'updated_at'
+          | 'metaapi_account_id'
+          | 'metaapi_region'
+          | 'last_synced_at'
+          | 'last_error'
+          | 'trade_execution_enabled'
         > & {
           metaapi_account_id?: string | null;
           metaapi_region?: string | null;
           last_synced_at?: string | null;
           last_error?: string | null;
+          trade_execution_enabled?: boolean;
         };
         Update: Partial<Omit<BrokerConnection, 'id' | 'user_id'>>;
         Relationships: [];
@@ -363,6 +425,34 @@ export interface Database {
       // client-side .insert() should fail at compile time.
       aria_conversations: {
         Row: AriaConversation;
+        Insert: never;
+        Update: never;
+        Relationships: [];
+      };
+      // Written only by the founder/signal desk via service-role (no
+      // Next.js insert/update path exists — see the Signal Mode
+      // execution-layer summary). RLS grants `authenticated` SELECT only.
+      signals: {
+        Row: Signal;
+        Insert: never;
+        Update: never;
+        Relationships: [];
+      };
+      // Append-only audit log, written by both the Next.js /api/signals/
+      // [id]/skip route (RLS-permitted, user-scoped insert) and the Python
+      // broker-sync service's service-role client (POST
+      // /signals/{id}/execute, on both success and failure). No UPDATE/
+      // DELETE policy exists — an action, once taken, is final.
+      signal_actions: {
+        Row: SignalAction;
+        Insert: Omit<SignalAction, 'id' | 'created_at'>;
+        Update: never;
+        Relationships: [];
+      };
+      // Written only by the (not-yet-built) outcome-tracking job once a
+      // signal closes — never by the Next.js app.
+      signal_outcomes: {
+        Row: SignalOutcome;
         Insert: never;
         Update: never;
         Relationships: [];

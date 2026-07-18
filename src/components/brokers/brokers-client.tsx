@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { Link2, RefreshCw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { BrokerConnectionCard } from '@/components/brokers/broker-connection-card';
+import { ReauthorizeConnectionDialog } from '@/components/brokers/reauthorize-connection-dialog';
 import type { BrokerConnectionSummary } from '@/components/brokers/types';
 
 interface BrokersClientProps {
@@ -15,6 +16,11 @@ export function BrokersClient({ initialConnections }: BrokersClientProps) {
   const [connections, setConnections] = useState<BrokerConnectionSummary[]>(initialConnections);
   const [isSyncing, setIsSyncing] = useState(false);
   const [syncMessage, setSyncMessage] = useState<string | null>(null);
+  const [authorizeTarget, setAuthorizeTarget] = useState<BrokerConnectionSummary | null>(null);
+
+  function handleReauthorized(updated: BrokerConnectionSummary) {
+    setConnections((prev) => prev.map((c) => (c.id === updated.id ? { ...c, ...updated } : c)));
+  }
 
   async function refetchConnections() {
     const res = await fetch('/api/brokers');
@@ -109,9 +115,18 @@ export function BrokersClient({ initialConnections }: BrokersClientProps) {
             key={connection.id}
             connection={connection}
             onDisconnect={handleDisconnect}
+            onAuthorizeExecutionClick={setAuthorizeTarget}
           />
         ))}
       </div>
+
+      <ReauthorizeConnectionDialog
+        connection={authorizeTarget}
+        onOpenChange={(open) => {
+          if (!open) setAuthorizeTarget(null);
+        }}
+        onReauthorized={handleReauthorized}
+      />
     </div>
   );
 }

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { TIER_LIMITS } from '@/lib/billing/tier-limits';
+import { TIER_LIMITS, tierAtLeast } from '@/lib/billing/tier-limits';
 import { canCreateAnotherPod, POD_LIMITS_BY_TIER } from '@/lib/validations/pods';
 
 describe('TIER_LIMITS', () => {
@@ -31,5 +31,25 @@ describe('canCreateAnotherPod', () => {
     expect(canCreateAnotherPod('elite', 0)).toBe(true);
     expect(canCreateAnotherPod('elite', 1000)).toBe(true);
     expect(canCreateAnotherPod('elite', Number.MAX_SAFE_INTEGER)).toBe(true);
+  });
+});
+
+describe('tierAtLeast', () => {
+  it('is reflexive — every tier satisfies its own requirement', () => {
+    expect(tierAtLeast('free', 'free')).toBe(true);
+    expect(tierAtLeast('pro', 'pro')).toBe(true);
+    expect(tierAtLeast('elite', 'elite')).toBe(true);
+  });
+
+  it('a higher tier satisfies a lower requirement', () => {
+    expect(tierAtLeast('pro', 'free')).toBe(true);
+    expect(tierAtLeast('elite', 'free')).toBe(true);
+    expect(tierAtLeast('elite', 'pro')).toBe(true);
+  });
+
+  it('a lower tier does not satisfy a higher requirement', () => {
+    expect(tierAtLeast('free', 'pro')).toBe(false);
+    expect(tierAtLeast('free', 'elite')).toBe(false);
+    expect(tierAtLeast('pro', 'elite')).toBe(false);
   });
 });
