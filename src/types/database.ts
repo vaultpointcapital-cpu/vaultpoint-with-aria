@@ -201,6 +201,11 @@ export type Subscription = {
   // Stripe customer id / Paystack customer code — set on first successful
   // checkout, used to match later renewal/cancellation webhook events.
   provider_customer_id: string | null;
+  // Captured from Paystack's charge.success webhook — the only way to
+  // charge a Paystack customer off-session for profit-share billing. Null
+  // for Stripe subscribers and for Paystack subscribers with no successful
+  // charge yet. See 20260718000003_add_profit_share_billing.sql.
+  paystack_authorization_code: string | null;
   tier: SubscriptionTier;
   status: SubscriptionStatus;
   current_period_end: string | null;
@@ -217,6 +222,26 @@ export type BillingWebhookEvent = {
   // supabase/migrations/20260717000000_reconcile_subscriptions_for_billing.sql
   metadata: Record<string, unknown>;
   processed_at: string;
+};
+
+export type ProfitShareStatus = 'pending' | 'charged' | 'failed' | 'skipped';
+
+// Signal Mode Part 2 — one row per (user, billing period), always,
+// including periods with no charge due. See
+// supabase/migrations/20260718000003_add_profit_share_billing.sql.
+export type ProfitShareCharge = {
+  id: string;
+  user_id: string;
+  period_start: string;
+  period_end: string;
+  attributed_profit: number;
+  fee_amount: number;
+  fee_currency: string;
+  payment_provider: PaymentProvider | null;
+  provider_charge_id: string | null;
+  status: ProfitShareStatus;
+  failure_reason: string | null;
+  created_at: string;
 };
 
 export type AcademyVideo = {
@@ -419,7 +444,12 @@ export interface Database {
       };
       subscriptions: {
         Row: Subscription;
-        Insert: Omit<Subscription, 'id' | 'created_at' | 'updated_at'>;
+        // paystack_authorization_code starts null on every insert (the
+        // checkout-initiation routes never have it yet) — only the
+        // Paystack webhook's later UPDATE ever sets it, on charge.success.
+        Insert: Omit<Subscription, 'id' | 'created_at' | 'updated_at' | 'paystack_authorization_code'> & {
+          paystack_authorization_code?: string | null;
+        };
         Update: Partial<Omit<Subscription, 'id' | 'user_id'>>;
         Relationships: [];
       };
@@ -427,6 +457,15 @@ export interface Database {
         Row: BillingWebhookEvent;
         Insert: Omit<BillingWebhookEvent, 'id' | 'processed_at'>;
         Update: never; // append-only audit log
+        Relationships: [];
+      };
+      // Written only by the profit-share billing run's service-role
+      // client (src/lib/billing/profit-share.ts) — never by any
+      // user-facing route. RLS grants users SELECT on their own rows only.
+      profit_share_charges: {
+        Row: ProfitShareCharge;
+        Insert: Omit<ProfitShareCharge, 'id' | 'created_at'>;
+        Update: never; // a period's outcome, once recorded, is final — rerun as a new period instead
         Relationships: [];
       };
       academy_videos: {

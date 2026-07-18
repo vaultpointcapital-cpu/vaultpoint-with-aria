@@ -18,6 +18,11 @@ interface PaystackWebhookPayload {
     subscription?: { subscription_code?: string } | null;
     metadata?: { user_id?: string };
     next_payment_date?: string;
+    // Only present on charge.success — the reusable code
+    // /transaction/charge_authorization needs to bill this customer
+    // off-session later (profit-share true-ups). Paystack re-sends the
+    // same authorization on every renewal charge, not just the first.
+    authorization?: { authorization_code?: string; reusable?: boolean };
   };
 }
 
@@ -64,6 +69,13 @@ export async function POST(request: NextRequest) {
         if (!userId) break;
 
         const tier = tierFromPaystackPlanCode(payload.data.plan?.plan_code);
+        // Only stored when Paystack marks it reusable — a non-reusable
+        // authorization_code would fail every later charge_authorization
+        // call anyway, so storing it would just be a misleading no-op
+        // for profit-share billing rather than a real capability.
+        const authorization = payload.data.authorization;
+        const authorizationCode =
+          authorization?.reusable && authorization.authorization_code ? authorization.authorization_code : undefined;
 
         // A renewal charge on an existing subscription vs. the very first
         // charge both fire charge.success — update in place if we already
@@ -76,7 +88,11 @@ export async function POST(request: NextRequest) {
         if (existing) {
           await supabase
             .from('subscriptions')
-            .update({ status: 'active', ...(tier ? { tier } : {}) })
+            .update({
+              status: 'active',
+              ...(tier ? { tier } : {}),
+              ...(authorizationCode ? { paystack_authorization_code: authorizationCode } : {}),
+            })
             .eq('id', existing.id);
         } else {
           await supabase.from('subscriptions').insert({
@@ -84,6 +100,7 @@ export async function POST(request: NextRequest) {
             payment_provider: 'paystack',
             provider_subscription_id: null,
             provider_customer_id: customerCode ?? null,
+            paystack_authorization_code: authorizationCode ?? null,
             tier: tier ?? 'pro',
             status: 'active',
             current_period_end: null,
