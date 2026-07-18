@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import hmac
+import json
 import time
 
 import httpx
@@ -16,9 +17,18 @@ MAX_RETRIES = 5
 
 class BybitClient(BrokerClient):
     """Bybit REST v5, unified trading account, linear (USDT perpetual)
-    positions. Read-only by construction — every call in this class is a
-    GET against a read endpoint; nothing here ever places, amends, or
-    cancels an order.
+    positions.
+
+    get_positions/get_balance/test_connection (the shared BrokerClient
+    interface every broker implements) stay strictly read-only, per
+    base.py's own guarantee. place_order() below is NOT part of that
+    shared interface — it's additive, Bybit-specific, and only ever
+    called from the Signal Mode execution path (see
+    app/signal_execution.py), never from sync_service's poll cycle. A
+    connection must have broker_connections.trade_execution_enabled = true
+    (which itself requires is_read_only = false, enforced by a DB CHECK
+    constraint — see supabase/migrations/20260718000000_add_signal_mode.sql)
+    before this method is ever reachable.
     """
 
     def __init__(self, api_key: str, api_secret: str, api_passphrase: str | None = None):
@@ -63,6 +73,84 @@ class BybitClient(BrokerClient):
             return body
 
         raise RuntimeError("Bybit API rate limit exceeded after retries.")
+
+    async def _post(self, path: str, body: dict) -> dict:
+        # Bybit v5 POST signing uses the raw JSON body string in place of
+        # GET's query string — same formula otherwise (timestamp + api_key
+        # + recv_window + payload), confirmed against Bybit's own
+        # authentication docs before writing this rather than assumed from
+        # the GET case. json.dumps must match byte-for-byte what's actually
+        # sent on the wire, so this builds the string once and sends that
+        # exact string as the request body (not letting httpx re-serialize
+        # the dict separately, which could reorder keys and invalidate the
+        # signature).
+        body_str = json.dumps(body)
+
+        for attempt in range(MAX_RETRIES):
+            timestamp = str(int(time.time() * 1000))
+            signature = self._sign(timestamp, body_str)
+            headers = {
+                "X-BAPI-API-KEY": self.api_key,
+                "X-BAPI-TIMESTAMP": timestamp,
+                "X-BAPI-SIGN": signature,
+                "X-BAPI-RECV-WINDOW": RECV_WINDOW,
+                "Content-Type": "application/json",
+            }
+
+            response = await self._client.post(path, content=body_str, headers=headers)
+
+            if response.status_code == 429:
+                retry_after = float(response.headers.get("Retry-After", 2**attempt))
+                await asyncio.sleep(retry_after)
+                continue
+
+            response.raise_for_status()
+            result = response.json()
+            if result.get("retCode") != 0:
+                raise RuntimeError(f"Bybit API error {result.get('retCode')}: {result.get('retMsg')}")
+            return result
+
+        raise RuntimeError("Bybit API rate limit exceeded after retries.")
+
+    async def place_order(
+        self,
+        *,
+        symbol: str,
+        side: str,
+        qty: float,
+        entry_price: float,
+        stop_loss: float,
+        take_profit: float,
+        order_link_id: str,
+    ) -> str:
+        """Places a GTC limit order at entry_price with stop-loss/take-
+        profit attached at creation — not a market order. A signal's
+        entry/stop/target are specific planned levels; filling at
+        whatever the market happens to be when the user taps Execute
+        (which could be long after the signal was generated) would be a
+        materially different trade than the one they reviewed and
+        approved. order_link_id must be unique per Bybit account —
+        callers pass the signal_actions row's own id (as a string) so a
+        retried request can't create a duplicate order.
+
+        Returns Bybit's orderId. Raises on any failure — callers must
+        not record a signal_actions row as 'executed' unless this
+        returns successfully.
+        """
+        body = {
+            "category": "linear",
+            "symbol": symbol,
+            "side": "Buy" if side == "long" else "Sell",
+            "orderType": "Limit",
+            "qty": str(qty),
+            "price": str(entry_price),
+            "timeInForce": "GTC",
+            "stopLoss": str(stop_loss),
+            "takeProfit": str(take_profit),
+            "orderLinkId": order_link_id[:36],
+        }
+        result = await self._post("/v5/order/create", body)
+        return result["result"]["orderId"]
 
     async def get_positions(self) -> list[Position]:
         body = await self._get("/v5/position/list", {"category": "linear", "settleCoin": "USDT"})

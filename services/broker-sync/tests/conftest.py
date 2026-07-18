@@ -33,6 +33,7 @@ class FakeQuery:
         self.on_conflict = None
         self.filters: list[tuple] = []
         self._single = False
+        self._maybe_single = False
         self._order = None
 
     def select(self, columns):
@@ -79,6 +80,15 @@ class FakeQuery:
         self._single = True
         return self
 
+    def maybe_single(self):
+        # Real supabase-py's maybe_single differs from single() only in
+        # not raising on zero rows — this fake's single() never raised on
+        # zero rows to begin with, so behaviourally they're the same here.
+        # Kept as a distinct flag (not aliased to _single) so a test
+        # asserting on which one was called can still tell them apart.
+        self._maybe_single = True
+        return self
+
     def order(self, col, desc=False):
         self._order = (col, desc)
         return self
@@ -87,7 +97,7 @@ class FakeQuery:
         self.client.calls.append(self)
         if self.op == "select":
             data = self.client.select_responses.get((self.table_name, self.columns), [])
-            if self._single:
+            if self._single or self._maybe_single:
                 return FakeResult(data[0] if data else None)
             return FakeResult(data)
         if self.op == "insert":

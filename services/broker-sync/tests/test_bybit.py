@@ -192,3 +192,123 @@ async def test_connection_false_on_failure():
 
     client = make_client(handler)
     assert await client.test_connection() is False
+
+
+class TestPlaceOrder:
+    async def test_places_a_limit_order_with_stop_loss_and_take_profit(self):
+        captured = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured["path"] = request.url.path
+            import json as _json
+
+            captured["body"] = _json.loads(request.content)
+            return httpx.Response(200, json=ok_response({"orderId": "order-123"}))
+
+        client = make_client(handler)
+        order_id = await client.place_order(
+            symbol="BTCUSDT",
+            side="long",
+            qty=0.01,
+            entry_price=65000,
+            stop_loss=63000,
+            take_profit=70000,
+            order_link_id="signal-abc",
+        )
+
+        assert order_id == "order-123"
+        assert captured["path"] == "/v5/order/create"
+        assert captured["body"] == {
+            "category": "linear",
+            "symbol": "BTCUSDT",
+            "side": "Buy",
+            "orderType": "Limit",
+            "qty": "0.01",
+            "price": "65000",
+            "timeInForce": "GTC",
+            "stopLoss": "63000",
+            "takeProfit": "70000",
+            "orderLinkId": "signal-abc",
+        }
+
+    async def test_maps_short_direction_to_sell_side(self):
+        captured = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            import json as _json
+
+            captured["body"] = _json.loads(request.content)
+            return httpx.Response(200, json=ok_response({"orderId": "order-456"}))
+
+        client = make_client(handler)
+        await client.place_order(
+            symbol="ETHUSDT",
+            side="short",
+            qty=1,
+            entry_price=3000,
+            stop_loss=3200,
+            take_profit=2600,
+            order_link_id="signal-def",
+        )
+
+        assert captured["body"]["side"] == "Sell"
+
+    async def test_truncates_order_link_id_to_36_chars(self):
+        captured = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            import json as _json
+
+            captured["body"] = _json.loads(request.content)
+            return httpx.Response(200, json=ok_response({"orderId": "order-789"}))
+
+        client = make_client(handler)
+        long_id = "signal-" + "x" * 50
+        await client.place_order(
+            symbol="BTCUSDT",
+            side="long",
+            qty=0.01,
+            entry_price=65000,
+            stop_loss=63000,
+            take_profit=70000,
+            order_link_id=long_id,
+        )
+
+        assert len(captured["body"]["orderLinkId"]) == 36
+        assert captured["body"]["orderLinkId"] == long_id[:36]
+
+    async def test_signs_the_post_body_not_a_query_string(self):
+        # Bybit v5 POST signing uses the raw JSON body string in the same
+        # formula as GET's query string — verified against Bybit's own
+        # authentication docs before implementing this. A wrong signature
+        # scheme would make every real order request fail with a 401
+        # from Bybit, never surfaced by a test that only checks the
+        # request body content.
+        client = BybitClient(api_key="test-key", api_secret="test-secret")
+        import json as _json
+
+        body = {"category": "linear", "symbol": "BTCUSDT"}
+        body_str = _json.dumps(body)
+        signature = client._sign("1700000000000", body_str)
+
+        expected_payload = f"1700000000000test-key{RECV_WINDOW}{body_str}"
+        expected = hmac.new(b"test-secret", expected_payload.encode("utf-8"), hashlib.sha256).hexdigest()
+        assert signature == expected
+
+    async def test_raises_on_broker_rejection(self):
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200, json={"retCode": 110007, "retMsg": "insufficient available balance", "result": {}}
+            )
+
+        client = make_client(handler)
+        with pytest.raises(RuntimeError, match="insufficient available balance"):
+            await client.place_order(
+                symbol="BTCUSDT",
+                side="long",
+                qty=0.01,
+                entry_price=65000,
+                stop_loss=63000,
+                take_profit=70000,
+                order_link_id="signal-fail",
+            )

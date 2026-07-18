@@ -302,3 +302,114 @@ async def test_connection_false_on_failure():
 
     client = make_client(handler, account_id="acct-1", region="london")
     assert await client.test_connection() is False
+
+
+class TestPlaceOrder:
+    async def test_places_a_buy_limit_order_for_long(self):
+        captured = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured["path"] = request.url.path
+            captured["body"] = json.loads(request.read())
+            return httpx.Response(
+                200, json={"numericCode": 0, "stringCode": "TRADE_RETCODE_DONE", "orderId": "mt-order-1"}
+            )
+
+        client = make_client(handler, account_id="acct-1", region="london")
+        order_id = await client.place_order(
+            symbol="EURUSD",
+            side="long",
+            volume=0.5,
+            entry_price=1.1,
+            stop_loss=1.09,
+            take_profit=1.12,
+        )
+
+        assert order_id == "mt-order-1"
+        assert captured["path"] == "/users/current/accounts/acct-1/trade"
+        assert captured["body"] == {
+            "actionType": "ORDER_TYPE_BUY_LIMIT",
+            "symbol": "EURUSD",
+            "volume": 0.5,
+            "openPrice": 1.1,
+            "stopLoss": 1.09,
+            "takeProfit": 1.12,
+        }
+
+    async def test_places_a_sell_limit_order_for_short(self):
+        captured = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured["body"] = json.loads(request.read())
+            return httpx.Response(
+                200, json={"numericCode": 0, "stringCode": "TRADE_RETCODE_DONE", "orderId": "mt-order-2"}
+            )
+
+        client = make_client(handler, account_id="acct-1", region="london")
+        await client.place_order(
+            symbol="GBPUSD",
+            side="short",
+            volume=1.0,
+            entry_price=1.3,
+            stop_loss=1.31,
+            take_profit=1.27,
+        )
+
+        assert captured["body"]["actionType"] == "ORDER_TYPE_SELL_LIMIT"
+
+    async def test_raises_when_account_not_provisioned(self):
+        def handler(request: httpx.Request) -> httpx.Response:
+            raise AssertionError("should not make an HTTP call before provisioning")
+
+        client = make_client(handler)
+        with pytest.raises(MetaTraderAccountNotReadyError):
+            await client.place_order(
+                symbol="EURUSD",
+                side="long",
+                volume=0.5,
+                entry_price=1.1,
+                stop_loss=1.09,
+                take_profit=1.12,
+            )
+
+    async def test_raises_on_http_error_status(self):
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(500, text="boom")
+
+        client = make_client(handler, account_id="acct-1", region="london")
+        with pytest.raises(RuntimeError, match="trade request failed"):
+            await client.place_order(
+                symbol="EURUSD",
+                side="long",
+                volume=0.5,
+                entry_price=1.1,
+                stop_loss=1.09,
+                take_profit=1.12,
+            )
+
+    async def test_raises_when_string_code_is_not_done(self):
+        # A 200 response is not itself success — MetaApi returns 200 with
+        # a rejection stringCode (e.g. requote, invalid stops, no money)
+        # rather than a non-200 status. A caller checking only the HTTP
+        # status would record a rejected order as 'executed'.
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={
+                    "numericCode": 10019,
+                    "stringCode": "TRADE_RETCODE_NO_MONEY",
+                    "message": "Not enough money",
+                    "orderId": None,
+                },
+            )
+
+        client = make_client(handler, account_id="acct-1", region="london")
+        with pytest.raises(RuntimeError, match="TRADE_RETCODE_NO_MONEY"):
+            await client.place_order(
+                symbol="EURUSD",
+                side="long",
+                volume=0.5,
+                entry_price=1.1,
+                stop_loss=1.09,
+                take_profit=1.12,
+            )

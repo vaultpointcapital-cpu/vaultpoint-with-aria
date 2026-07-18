@@ -4,6 +4,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app import main
+from app.signal_execution import SignalExecutionError
 from tests.conftest import FakeSupabase
 
 
@@ -250,3 +251,89 @@ def test_sync_returns_404_when_no_connections(monkeypatch, client):
     )
 
     assert response.status_code == 404
+
+
+# ---------------------------------------------------------------------
+# POST /signals/{signal_id}/execute
+# ---------------------------------------------------------------------
+
+EXECUTE_BODY = {"user_id": "user-1", "broker_connection_id": "conn-1", "size": 0.01}
+
+
+def test_execute_signal_rejects_missing_api_key(client):
+    response = client.post("/signals/signal-1/execute", json=EXECUTE_BODY)
+    assert response.status_code == 401
+
+
+def test_execute_signal_rejects_wrong_api_key(client):
+    response = client.post(
+        "/signals/signal-1/execute", json=EXECUTE_BODY, headers={"x-api-key": "wrong-key"}
+    )
+    assert response.status_code == 401
+
+
+def test_execute_signal_records_executed_action_on_success(monkeypatch, client):
+    async def _fake_execute_signal(**kwargs):
+        assert kwargs == {
+            "user_id": "user-1",
+            "signal_id": "signal-1",
+            "broker_connection_id": "conn-1",
+            "size": 0.01,
+        }
+        return "broker-order-999"
+
+    supabase = FakeSupabase()
+    monkeypatch.setattr(main, "execute_signal", _fake_execute_signal)
+    monkeypatch.setattr(main, "get_service_client", lambda: supabase)
+
+    response = client.post(
+        "/signals/signal-1/execute",
+        json=EXECUTE_BODY,
+        headers={"x-api-key": main.settings.python_service_api_key},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "executed"
+    assert body["broker_order_id"] == "broker-order-999"
+    assert "signal_action_id" in body
+
+    inserts = supabase.calls_for("signal_actions", "insert")
+    assert len(inserts) == 1
+    assert inserts[0].values == {
+        "signal_id": "signal-1",
+        "user_id": "user-1",
+        "broker_connection_id": "conn-1",
+        "action": "executed",
+        "executed_size": 0.01,
+        "broker_order_id": "broker-order-999",
+    }
+
+
+def test_execute_signal_records_failed_action_and_returns_422_on_execution_error(monkeypatch, client):
+    async def _fake_execute_signal(**kwargs):
+        raise SignalExecutionError("insufficient available balance")
+
+    supabase = FakeSupabase()
+    monkeypatch.setattr(main, "execute_signal", _fake_execute_signal)
+    monkeypatch.setattr(main, "get_service_client", lambda: supabase)
+
+    response = client.post(
+        "/signals/signal-1/execute",
+        json=EXECUTE_BODY,
+        headers={"x-api-key": main.settings.python_service_api_key},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "insufficient available balance"
+
+    inserts = supabase.calls_for("signal_actions", "insert")
+    assert len(inserts) == 1
+    assert inserts[0].values == {
+        "signal_id": "signal-1",
+        "user_id": "user-1",
+        "broker_connection_id": "conn-1",
+        "action": "failed",
+        "executed_size": 0.01,
+        "failure_reason": "insufficient available balance",
+    }

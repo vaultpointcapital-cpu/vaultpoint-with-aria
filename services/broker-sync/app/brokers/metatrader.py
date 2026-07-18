@@ -244,3 +244,49 @@ class MetaTraderClient(BrokerClient):
             return True
         except Exception:
             return False
+
+    async def place_order(
+        self,
+        *,
+        symbol: str,
+        side: str,
+        volume: float,
+        entry_price: float,
+        stop_loss: float,
+        take_profit: float,
+    ) -> str:
+        """Places a pending limit order (not a market order — same
+        reasoning as BybitClient.place_order: fill at the signal's
+        planned entry level, not whatever the market is when the user
+        taps Execute). Not part of the shared BrokerClient interface —
+        only reachable from the Signal Mode execution path, and only for
+        a connection with trade_execution_enabled = true (DB-enforced,
+        see supabase/migrations/20260718000000_add_signal_mode.sql).
+
+        Verified against MetaApi's own trade API docs before writing
+        this: actionType is ORDER_TYPE_BUY_LIMIT / ORDER_TYPE_SELL_LIMIT,
+        not a generic "side" field.
+
+        Returns MetaApi's orderId. Raises on any failure or non-success
+        stringCode — callers must not record a signal_actions row as
+        'executed' unless this returns successfully.
+        """
+        host = self._client_api_host()
+        body = {
+            "actionType": "ORDER_TYPE_BUY_LIMIT" if side == "long" else "ORDER_TYPE_SELL_LIMIT",
+            "symbol": symbol,
+            "volume": volume,
+            "openPrice": entry_price,
+            "stopLoss": stop_loss,
+            "takeProfit": take_profit,
+        }
+        response = await self._request(
+            "POST", f"{host}/users/current/accounts/{self.account_id}/trade", json=body
+        )
+        if response.status_code != 200:
+            raise RuntimeError(f"MetaApi trade request failed ({response.status_code}): {response.text[:300]}")
+
+        result = response.json()
+        if result.get("stringCode") != "TRADE_RETCODE_DONE":
+            raise RuntimeError(f"MetaApi trade rejected: {result.get('stringCode')} — {result.get('message')}")
+        return result["orderId"]

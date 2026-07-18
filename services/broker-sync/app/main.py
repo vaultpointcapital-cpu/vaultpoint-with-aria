@@ -6,12 +6,14 @@ from datetime import UTC, datetime
 
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 
 from .config import settings
 from .observability import init_sentry
 from .rate_limiter import check_and_set_rate_limit
 from .redis_cache import get_last_poll_heartbeat, get_redis
 from .scheduler import scheduler, start_scheduler
+from .signal_execution import SignalExecutionError, execute_signal
 from .supabase_client import get_service_client
 from .sync_service import sync_connection
 
@@ -136,3 +138,66 @@ async def force_sync(user_id: str):
         await sync_connection(connection)
 
     return {"status": "synced", "connections": len(result.data)}
+
+
+class ExecuteSignalRequest(BaseModel):
+    user_id: str
+    broker_connection_id: str
+    size: float
+
+
+@app.post("/signals/{signal_id}/execute", dependencies=[Depends(require_api_key)])
+async def execute_signal_endpoint(signal_id: str, body: ExecuteSignalRequest):
+    """Called by the Next.js app's own POST /api/signals/[id]/execute
+    route (never directly by a browser — same x-api-key trust boundary
+    as /sync/{user_id}). Records the signal_actions row itself, on
+    either outcome, so the caller doesn't need a second round-trip: a
+    failed order is still an audited action, per Signal Mode's
+    acceptance criteria ("full audit log of every action taken").
+    """
+    supabase = get_service_client()
+
+    try:
+        order_id = await execute_signal(
+            user_id=body.user_id,
+            signal_id=signal_id,
+            broker_connection_id=body.broker_connection_id,
+            size=body.size,
+        )
+    except SignalExecutionError as exc:
+        # exc's own name is deleted by Python at the end of this except
+        # block, so it can't be safely referenced inside the lambda below
+        # (pyflakes flags this correctly as F821) — captured into a plain
+        # local first instead.
+        failure_reason = str(exc)[:500]
+        await asyncio.to_thread(
+            lambda: supabase.table("signal_actions")
+            .insert(
+                {
+                    "signal_id": signal_id,
+                    "user_id": body.user_id,
+                    "broker_connection_id": body.broker_connection_id,
+                    "action": "failed",
+                    "executed_size": body.size,
+                    "failure_reason": failure_reason,
+                }
+            )
+            .execute()
+        )
+        raise HTTPException(status_code=422, detail=failure_reason) from exc
+
+    result = await asyncio.to_thread(
+        lambda: supabase.table("signal_actions")
+        .insert(
+            {
+                "signal_id": signal_id,
+                "user_id": body.user_id,
+                "broker_connection_id": body.broker_connection_id,
+                "action": "executed",
+                "executed_size": body.size,
+                "broker_order_id": order_id,
+            }
+        )
+        .execute()
+    )
+    return {"status": "executed", "broker_order_id": order_id, "signal_action_id": result.data[0]["id"]}
