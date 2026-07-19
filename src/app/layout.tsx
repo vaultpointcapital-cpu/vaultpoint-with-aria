@@ -1,10 +1,32 @@
-import type { Metadata } from 'next';
+import type { Metadata, Viewport } from 'next';
 import './globals.css';
 
 export const metadata: Metadata = {
   title: 'VaultPoint — Unified Portfolio & Savings',
   description:
     'Track your crypto, forex, and savings goals in one place. Built for traders, by traders.',
+  icons: {
+    icon: [
+      { url: '/icons/favicon-16.png', sizes: '16x16', type: 'image/png' },
+      { url: '/icons/favicon-32.png', sizes: '32x32', type: 'image/png' },
+      { url: '/icons/icon-192.png', sizes: '192x192', type: 'image/png' },
+    ],
+    apple: [{ url: '/icons/apple-touch-icon-180.png', sizes: '180x180', type: 'image/png' }],
+  },
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: 'black-translucent',
+    title: 'VaultPoint',
+  },
+};
+
+// themeColor/colorScheme live in a separate `viewport` export as of
+// Next.js 14 — `metadata.themeColor` is deprecated and logs a build
+// warning if used. Value matches tailwind.config.ts's colors.accent
+// (#6C63FF), same as app/manifest.ts's theme_color.
+export const viewport: Viewport = {
+  themeColor: '#6C63FF',
+  colorScheme: 'dark',
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

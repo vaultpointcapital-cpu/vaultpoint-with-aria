@@ -50,8 +50,13 @@ export const config = {
   matcher: [
     /*
      * Match all paths except static assets and image optimization files,
-     * so the session refresh runs on every real page/API request.
+     * so the session refresh runs on every real page/API request. Also
+     * excludes the PWA's own static files (sw.js, manifest.webmanifest,
+     * icons/*, offline) and .well-known/* — none of these are
+     * user-specific pages, so there's no session to refresh for them, and
+     * every one of them must stay reachable even when auth/Supabase state
+     * is broken (that's the whole point of /offline and the manifest).
      */
-    '/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)',
+    '/((?!_next/static|_next/image|favicon.ico|sw.js|manifest.webmanifest|icons/|offline|\\.well-known/|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)',
   ],
 };
