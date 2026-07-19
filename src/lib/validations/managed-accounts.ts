@@ -168,6 +168,77 @@ export function computeDistributionBreakdown(grossPnl: number, profitSplitPct: n
   return { grossPnl, clientSharePct: 100 - profitSplitPct, clientShare, vaultpointShare };
 }
 
+export interface ComplianceFlag {
+  type: 'high_drawdown' | 'disclosure_reconfirmation_required' | 'kyc_backlog' | 'stale_pending_withdrawal' | 'missing_authorization';
+  detail: string;
+}
+
+const KYC_BACKLOG_DAYS = 3;
+const STALE_WITHDRAWAL_DAYS = 5;
+const HIGH_DRAWDOWN_WARNING_RATIO = 0.8;
+
+/**
+ * The compliance dashboard's own acceptance criteria call for
+ * "drawdown/discrepancy/missing-signature alerts." missing_authorization
+ * is checked here even though managed_accounts_funding_requires_authorization
+ * already makes that state impossible to reach through normal application
+ * writes — this is the belt-and-suspenders check the spec explicitly asks
+ * for, for whatever reaches this state through a path the CHECK constraint
+ * doesn't cover (a manual service-role fix, a future migration). Backlog/
+ * staleness day thresholds are placeholders, same caveat as
+ * MANAGED_TIER_TERMS's numbers — no PRD Section 6 SLA was available.
+ */
+export function computeComplianceFlags(
+  account: {
+    status: string;
+    max_drawdown_pct: number;
+    kyc_status: string;
+    client_authorization_id: string | null;
+    requires_disclosure_reconfirmation: boolean;
+    created_at: string;
+  },
+  drawdownPct: number,
+  pendingDistributions: { requested_at: string | null }[],
+  now: Date = new Date()
+): ComplianceFlag[] {
+  const flags: ComplianceFlag[] = [];
+
+  if (account.status === 'active' && drawdownPct >= account.max_drawdown_pct * HIGH_DRAWDOWN_WARNING_RATIO) {
+    flags.push({
+      type: 'high_drawdown',
+      detail: `Drawdown ${drawdownPct.toFixed(1)}% is at or above ${(HIGH_DRAWDOWN_WARNING_RATIO * 100).toFixed(0)}% of the ${account.max_drawdown_pct}% policy maximum.`,
+    });
+  }
+
+  if (account.requires_disclosure_reconfirmation) {
+    flags.push({ type: 'disclosure_reconfirmation_required', detail: 'Client has not re-accepted updated tier terms.' });
+  }
+
+  if (account.kyc_status === 'pending') {
+    const ageDays = (now.getTime() - new Date(account.created_at).getTime()) / (1000 * 60 * 60 * 24);
+    if (ageDays >= KYC_BACKLOG_DAYS) {
+      flags.push({ type: 'kyc_backlog', detail: `KYC has been pending for ${Math.floor(ageDays)} days.` });
+    }
+  }
+
+  for (const distribution of pendingDistributions) {
+    if (!distribution.requested_at) continue;
+    const ageDays = (now.getTime() - new Date(distribution.requested_at).getTime()) / (1000 * 60 * 60 * 24);
+    if (ageDays >= STALE_WITHDRAWAL_DAYS) {
+      flags.push({
+        type: 'stale_pending_withdrawal',
+        detail: `A withdrawal request has been pending for ${Math.floor(ageDays)} days.`,
+      });
+    }
+  }
+
+  if ((account.status === 'pending_funding' || account.status === 'active') && !account.client_authorization_id) {
+    flags.push({ type: 'missing_authorization', detail: 'Account has no linked signed authorization record.' });
+  }
+
+  return flags;
+}
+
 export const withdrawalRequestSchema = z.object({
   withdrawalType: z.enum(['profit', 'full_closure']),
   payoutMethod: z.string().trim().min(1, 'Select a payout method'),

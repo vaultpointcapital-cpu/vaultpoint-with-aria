@@ -34,7 +34,9 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
 
   const { data: account } = await supabase
     .from('managed_accounts')
-    .select('id, status, starting_capital, profit_split_pct, withdrawal_window_cadence, next_withdrawal_window_date')
+    .select(
+      'id, status, starting_capital, profit_split_pct, withdrawal_window_cadence, next_withdrawal_window_date, requires_disclosure_reconfirmation'
+    )
     .eq('id', params.id)
     .eq('user_id', authData.user.id)
     .single();
@@ -45,6 +47,10 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
 
   if (account.status !== 'active') {
     return apiError('VALIDATION_ERROR', 'Only an active managed account can request a withdrawal.');
+  }
+
+  if (account.requires_disclosure_reconfirmation) {
+    return apiError('VALIDATION_ERROR', 'You must reconfirm the updated terms for this account before withdrawing.');
   }
 
   if (

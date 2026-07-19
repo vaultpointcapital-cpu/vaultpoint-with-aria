@@ -20,7 +20,7 @@ const TIERS: ManagedTier[] = ['bronze', 'silver', 'gold'];
 // must come from Legal before this flow accepts real clients. Flagged
 // here rather than silently shipping placeholder copy as if it were
 // final.
-const DISCLOSURE_TEXT = `RISK OF LOSS
+export const DISCLOSURE_TEXT = `RISK OF LOSS
 
 Trading foreign exchange, contracts for difference, and cryptocurrency derivatives on margin carries a high level of risk and may not be suitable for all investors. You could sustain a loss of some or all of your initial capital and should not invest money that you cannot afford to lose.
 

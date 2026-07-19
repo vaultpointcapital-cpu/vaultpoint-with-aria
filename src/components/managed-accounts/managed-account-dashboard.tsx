@@ -89,9 +89,14 @@ export function ManagedAccountDashboard({
       </div>
 
       {account.requires_disclosure_reconfirmation && (
-        <div role="alert" className="rounded-lg border border-warning/30 bg-warning/10 px-4 py-3 text-sm text-warning">
-          Terms for your tier have changed. You must re-accept the updated disclosure before your next
-          distribution.
+        <div role="alert" className="flex items-center justify-between gap-3 rounded-lg border border-warning/30 bg-warning/10 px-4 py-3 text-sm text-warning">
+          <span>
+            Terms for your tier have changed. You must re-accept the updated disclosure before your next
+            distribution.
+          </span>
+          <Link href={`/dashboard/managed-accounts/${account.id}/reconfirm`} className="shrink-0 font-medium underline">
+            Reconfirm now
+          </Link>
         </div>
       )}
 

@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { computeAccountStats, computeDistributionBreakdown, isEligibleForManagedTier } from '@/lib/validations/managed-accounts';
+import {
+  computeAccountStats,
+  computeComplianceFlags,
+  computeDistributionBreakdown,
+  isEligibleForManagedTier,
+} from '@/lib/validations/managed-accounts';
 
 describe('isEligibleForManagedTier', () => {
   it('allows a Pro user into bronze and silver but not gold', () => {
@@ -111,5 +116,74 @@ describe('computeDistributionBreakdown', () => {
       clientShare: -500,
       vaultpointShare: 0,
     });
+  });
+});
+
+describe('computeComplianceFlags', () => {
+  const baseAccount = {
+    status: 'active',
+    max_drawdown_pct: 20,
+    kyc_status: 'verified',
+    client_authorization_id: 'auth-1',
+    requires_disclosure_reconfirmation: false,
+    created_at: '2026-07-01T00:00:00Z',
+  };
+  const now = new Date('2026-07-19T00:00:00Z');
+
+  it('returns no flags for a clean active account', () => {
+    expect(computeComplianceFlags(baseAccount, 5, [], now)).toEqual([]);
+  });
+
+  it('flags high drawdown at or above 80% of the policy maximum, only while active', () => {
+    expect(computeComplianceFlags(baseAccount, 16, [], now)).toHaveLength(1);
+    expect(computeComplianceFlags(baseAccount, 15.9, [], now)).toEqual([]);
+    expect(computeComplianceFlags({ ...baseAccount, status: 'closed' }, 20, [], now)).toEqual([]);
+  });
+
+  it('flags disclosure reconfirmation when the account requires it', () => {
+    const flags = computeComplianceFlags({ ...baseAccount, requires_disclosure_reconfirmation: true }, 0, [], now);
+    expect(flags).toEqual([{ type: 'disclosure_reconfirmation_required', detail: expect.any(String) }]);
+  });
+
+  it('flags a KYC backlog once pending KYC has aged 3+ days, not before', () => {
+    const fresh = { ...baseAccount, kyc_status: 'pending', created_at: '2026-07-18T00:00:00Z' };
+    const stale = { ...baseAccount, kyc_status: 'pending', created_at: '2026-07-15T00:00:00Z' };
+    expect(computeComplianceFlags(fresh, 0, [], now)).toEqual([]);
+    expect(computeComplianceFlags(stale, 0, [], now).map((f) => f.type)).toEqual(['kyc_backlog']);
+  });
+
+  it('flags a stale pending withdrawal once requested 5+ days ago', () => {
+    const fresh = [{ requested_at: '2026-07-16T00:00:00Z' }];
+    const stale = [{ requested_at: '2026-07-10T00:00:00Z' }];
+    expect(computeComplianceFlags(baseAccount, 0, fresh, now)).toEqual([]);
+    expect(computeComplianceFlags(baseAccount, 0, stale, now).map((f) => f.type)).toEqual(['stale_pending_withdrawal']);
+  });
+
+  it('flags a missing authorization on a funded/active account with no linked authorization record', () => {
+    const flags = computeComplianceFlags({ ...baseAccount, client_authorization_id: null }, 0, [], now);
+    expect(flags.map((f) => f.type)).toEqual(['missing_authorization']);
+  });
+
+  it('never flags a missing authorization for a pre-funding account (pending_kyc/pending_authorization)', () => {
+    const flags = computeComplianceFlags(
+      { ...baseAccount, status: 'pending_kyc', client_authorization_id: null },
+      0,
+      [],
+      now
+    );
+    expect(flags).toEqual([]);
+  });
+
+  it('can report multiple flags at once', () => {
+    const account = {
+      ...baseAccount,
+      requires_disclosure_reconfirmation: true,
+      kyc_status: 'pending',
+      created_at: '2026-07-01T00:00:00Z',
+    };
+    const flags = computeComplianceFlags(account, 18, [{ requested_at: '2026-07-01T00:00:00Z' }], now);
+    expect(flags.map((f) => f.type).sort()).toEqual(
+      ['disclosure_reconfirmation_required', 'high_drawdown', 'kyc_backlog', 'stale_pending_withdrawal'].sort()
+    );
   });
 });
