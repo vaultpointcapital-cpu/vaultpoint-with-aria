@@ -24,6 +24,12 @@ export async function GET() {
       'id, broker, label, is_read_only, trade_execution_enabled, managed_mode_enabled, managed_mode_risk_pct, managed_mode_daily_loss_limit_pct, sync_status, last_synced_at, last_error, created_at'
     )
     .eq('user_id', authData.user.id)
+    // A connection with trade history is soft-disconnected (sync_status
+    // flips to 'disconnected'), never hard-deleted — see DELETE
+    // /api/brokers/:id. Exclude it here so it disappears from the user's
+    // list exactly as if it had been deleted, even though the row (and
+    // its trade history) still exists.
+    .neq('sync_status', 'disconnected')
     .order('created_at', { ascending: false });
 
   if (error) {

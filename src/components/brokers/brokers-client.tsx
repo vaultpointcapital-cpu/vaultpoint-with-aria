@@ -21,6 +21,7 @@ export function BrokersClient({ initialConnections, subscriptionTier }: BrokersC
   const [syncMessage, setSyncMessage] = useState<string | null>(null);
   const [authorizeTarget, setAuthorizeTarget] = useState<BrokerConnectionSummary | null>(null);
   const [managedModeTarget, setManagedModeTarget] = useState<BrokerConnectionSummary | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
 
   function handleReauthorized(updated: BrokerConnectionSummary) {
     setConnections((prev) => prev.map((c) => (c.id === updated.id ? { ...c, ...updated } : c)));
@@ -31,8 +32,13 @@ export function BrokersClient({ initialConnections, subscriptionTier }: BrokersC
   }
 
   async function handleDisableManagedMode(id: string) {
+    setActionError(null);
     const res = await fetch(`/api/brokers/${id}/managed-mode`, { method: 'DELETE' });
-    if (!res.ok) return;
+    if (!res.ok) {
+      const body = await res.json().catch(() => null);
+      setActionError(body?.error ?? 'Could not disable Managed Mode. Please try again.');
+      return;
+    }
     setConnections((prev) => prev.map((c) => (c.id === id ? { ...c, managed_mode_enabled: false } : c)));
   }
 
@@ -73,8 +79,13 @@ export function BrokersClient({ initialConnections, subscriptionTier }: BrokersC
   }
 
   async function handleDisconnect(id: string) {
+    setActionError(null);
     const res = await fetch(`/api/brokers/${id}`, { method: 'DELETE' });
-    if (!res.ok) return;
+    if (!res.ok) {
+      const body = await res.json().catch(() => null);
+      setActionError(body?.error ?? 'Could not disconnect this broker. Please try again.');
+      return;
+    }
     setConnections((prev) => prev.filter((c) => c.id !== id));
   }
 
@@ -122,6 +133,12 @@ export function BrokersClient({ initialConnections, subscriptionTier }: BrokersC
         Positions sync automatically about once a minute. Broker outages keep your last known
         data visible rather than clearing it.
       </p>
+
+      {actionError && (
+        <div role="alert" className="rounded-lg border border-warning/30 bg-warning/10 px-4 py-3 text-sm text-warning">
+          {actionError}
+        </div>
+      )}
 
       <div className="space-y-2">
         {connections.map((connection) => (
