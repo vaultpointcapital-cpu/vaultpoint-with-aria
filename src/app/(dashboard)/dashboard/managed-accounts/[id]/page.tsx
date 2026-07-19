@@ -1,6 +1,7 @@
 import { notFound } from 'next/navigation';
 import { createClient } from '@/lib/supabase/server';
 import { computeAccountStats } from '@/lib/validations/managed-accounts';
+import { maybeNotifyDrawdownWarning, maybeNotifyWithdrawalWindowOpen } from '@/lib/managed-accounts/notifications';
 import { ManagedAccountDashboard } from '@/components/managed-accounts/managed-account-dashboard';
 
 export default async function ManagedAccountDetailPage({ params }: { params: { id: string } }) {
@@ -60,6 +61,22 @@ export default async function ManagedAccountDetailPage({ params }: { params: { i
     trades,
     lastDistributionResult.data?.period_end ?? null
   );
+
+  if (account.status === 'active') {
+    await Promise.all([
+      maybeNotifyDrawdownWarning(supabase, {
+        userId: authData.user.id,
+        managedAccountId: account.id,
+        drawdownPct: stats.drawdownPct,
+        maxDrawdownPct: account.max_drawdown_pct,
+      }),
+      maybeNotifyWithdrawalWindowOpen(supabase, {
+        userId: authData.user.id,
+        managedAccountId: account.id,
+        nextWithdrawalWindowDate: account.next_withdrawal_window_date,
+      }),
+    ]);
+  }
 
   return (
     <ManagedAccountDashboard

@@ -1,6 +1,7 @@
 import { type NextRequest } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 import { computeAccountStats } from '@/lib/validations/managed-accounts';
+import { maybeNotifyDrawdownWarning, maybeNotifyWithdrawalWindowOpen } from '@/lib/managed-accounts/notifications';
 import { apiError, apiSuccess } from '@/lib/utils/api-response';
 
 /**
@@ -70,6 +71,27 @@ export async function GET(_request: NextRequest, { params }: { params: { id: str
     trades,
     lastDistributionResult.data?.period_end ?? null
   );
+
+  // Fired on read rather than by a scheduled job — no cron exists for
+  // managed_accounts the way alert_engine.py's scheduler covers `alerts`
+  // (see the notifications migration's comment). A real proactive
+  // push/email would need one; this is the honest, working substitute:
+  // the check runs whenever the client's own dashboard loads.
+  if (account.status === 'active') {
+    await Promise.all([
+      maybeNotifyDrawdownWarning(supabase, {
+        userId: authData.user.id,
+        managedAccountId: account.id,
+        drawdownPct: stats.drawdownPct,
+        maxDrawdownPct: account.max_drawdown_pct,
+      }),
+      maybeNotifyWithdrawalWindowOpen(supabase, {
+        userId: authData.user.id,
+        managedAccountId: account.id,
+        nextWithdrawalWindowDate: account.next_withdrawal_window_date,
+      }),
+    ]);
+  }
 
   return apiSuccess({
     account,

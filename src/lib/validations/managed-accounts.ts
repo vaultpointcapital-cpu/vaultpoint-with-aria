@@ -175,7 +175,7 @@ export interface ComplianceFlag {
 
 const KYC_BACKLOG_DAYS = 3;
 const STALE_WITHDRAWAL_DAYS = 5;
-const HIGH_DRAWDOWN_WARNING_RATIO = 0.8;
+export const HIGH_DRAWDOWN_WARNING_RATIO = 0.8;
 
 /**
  * The compliance dashboard's own acceptance criteria call for

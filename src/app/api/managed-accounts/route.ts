@@ -6,6 +6,7 @@ import {
   isEligibleForManagedTier,
   MANAGED_TIER_TERMS,
 } from '@/lib/validations/managed-accounts';
+import { createNotification } from '@/lib/managed-accounts/notifications';
 import { apiError, apiSuccess } from '@/lib/utils/api-response';
 
 /**
@@ -133,6 +134,14 @@ export async function POST(request: NextRequest) {
   if (error) {
     return apiError('INTERNAL_ERROR', 'Could not create your managed account.');
   }
+
+  await createNotification(supabase, {
+    userId: authData.user.id,
+    managedAccountId: data.id,
+    type: 'onboarding_milestone',
+    title: 'Managed account created',
+    body: `Your ${parsed.data.tier} Managed Account has been created and is pending KYC verification.`,
+  });
 
   return apiSuccess({ managedAccount: data }, 201);
 }

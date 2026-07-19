@@ -1,6 +1,7 @@
 import { type NextRequest } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 import { computeAccountStats, computeDistributionBreakdown, withdrawalRequestSchema } from '@/lib/validations/managed-accounts';
+import { createNotification } from '@/lib/managed-accounts/notifications';
 import { apiError, apiSuccess } from '@/lib/utils/api-response';
 
 /**
@@ -141,6 +142,14 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
       return apiError('INTERNAL_ERROR', 'Withdrawal was recorded but the account could not be closed. Contact support.');
     }
   }
+
+  await createNotification(supabase, {
+    userId: authData.user.id,
+    managedAccountId: account.id,
+    type: 'distribution_requested',
+    title: 'Withdrawal requested',
+    body: `Your ${withdrawalType === 'full_closure' ? 'account closure and full ' : ''}withdrawal request has been submitted and is pending review.`,
+  });
 
   return apiSuccess({ distribution }, 201);
 }

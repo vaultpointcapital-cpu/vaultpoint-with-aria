@@ -1,6 +1,7 @@
 import { type NextRequest } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 import { fundManagedAccountSchema } from '@/lib/validations/managed-accounts';
+import { createNotification } from '@/lib/managed-accounts/notifications';
 import { apiError, apiSuccess } from '@/lib/utils/api-response';
 
 /**
@@ -61,6 +62,14 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
   if (error) {
     return apiError('INTERNAL_ERROR', 'Could not confirm funding for this account.');
   }
+
+  await createNotification(supabase, {
+    userId: authData.user.id,
+    managedAccountId: params.id,
+    type: 'onboarding_milestone',
+    title: 'Managed account active',
+    body: 'Your account has been funded and is now active.',
+  });
 
   return apiSuccess({ managedAccount: data });
 }

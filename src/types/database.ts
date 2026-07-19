@@ -264,6 +264,12 @@ export type WithdrawalWindowCadence = 'monthly' | 'biweekly' | 'on_demand';
 export type ManagedTradeSide = 'long' | 'short';
 export type ProfitDistributionStatus = 'pending' | 'confirmed' | 'paid' | 'failed';
 export type SignatureMethod = 'checkbox_and_typed_name';
+export type ManagedAccountNotificationType =
+  | 'onboarding_milestone'
+  | 'distribution_requested'
+  | 'distribution_paid'
+  | 'withdrawal_window_open'
+  | 'drawdown_warning';
 
 export type DisclosureView = {
   id: string;
@@ -349,6 +355,17 @@ export type ProfitDistribution = {
   requested_at: string | null;
   confirmed_at: string | null;
   paid_at: string | null;
+  created_at: string;
+};
+
+export type ManagedAccountNotification = {
+  id: string;
+  user_id: string;
+  managed_account_id: string;
+  type: ManagedAccountNotificationType;
+  title: string;
+  body: string;
+  read_at: string | null;
   created_at: string;
 };
 
@@ -608,6 +625,12 @@ export interface Database {
         Row: ProfitDistribution;
         Insert: Omit<ProfitDistribution, 'id' | 'created_at'>;
         Update: Partial<Omit<ProfitDistribution, 'id' | 'managed_account_id' | 'period_start' | 'period_end'>>;
+        Relationships: [];
+      };
+      managed_account_notifications: {
+        Row: ManagedAccountNotification;
+        Insert: Omit<ManagedAccountNotification, 'id' | 'created_at'>;
+        Update: Pick<ManagedAccountNotification, 'read_at'>;
         Relationships: [];
       };
       academy_videos: {

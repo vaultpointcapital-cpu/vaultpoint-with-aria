@@ -37,7 +37,11 @@ export default async function CompliancePage() {
           .order('period_end', { ascending: false })
           .limit(1)
           .maybeSingle(),
-        admin.from('profit_distributions').select('requested_at').eq('managed_account_id', account.id).eq('status', 'pending'),
+        admin
+          .from('profit_distributions')
+          .select('id, period_start, period_end, client_share, requested_at')
+          .eq('managed_account_id', account.id)
+          .eq('status', 'pending'),
       ]);
 
       const stats = computeAccountStats(
@@ -48,7 +52,12 @@ export default async function CompliancePage() {
 
       const flags = computeComplianceFlags(account, stats.drawdownPct, pendingDistributionsResult.data ?? []);
 
-      return { account, drawdownPct: stats.drawdownPct, flags };
+      return {
+        account,
+        drawdownPct: stats.drawdownPct,
+        flags,
+        pendingDistributions: pendingDistributionsResult.data ?? [],
+      };
     })
   );
 

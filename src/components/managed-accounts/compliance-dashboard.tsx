@@ -1,8 +1,19 @@
 'use client';
 
+import { useState } from 'react';
+import { useRouter } from 'next/navigation';
+import { Button } from '@/components/ui/button';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
 import { cn } from '@/lib/utils/cn';
 import type { ComplianceFlag } from '@/lib/validations/managed-accounts';
+
+interface PendingDistribution {
+  id: string;
+  period_start: string;
+  period_end: string;
+  client_share: number;
+  requested_at: string | null;
+}
 
 interface AccountRow {
   account: {
@@ -15,6 +26,7 @@ interface AccountRow {
   };
   drawdownPct: number;
   flags: ComplianceFlag[];
+  pendingDistributions: PendingDistribution[];
 }
 
 interface ComplianceDashboardProps {
@@ -29,9 +41,28 @@ const FLAG_LABELS: Record<ComplianceFlag['type'], string> = {
   missing_authorization: 'Missing authorization',
 };
 
+function formatCurrency(value: number): string {
+  return value.toLocaleString('en-US', { style: 'currency', currency: 'USD' });
+}
+
 export function ComplianceDashboard({ rows }: ComplianceDashboardProps) {
+  const router = useRouter();
+  const [markingPaidId, setMarkingPaidId] = useState<string | null>(null);
+
   const flagged = rows.filter((r) => r.flags.length > 0);
   const clean = rows.filter((r) => r.flags.length === 0);
+  const pendingWithdrawals = rows.flatMap((r) =>
+    r.pendingDistributions.map((d) => ({ accountId: r.account.id, tier: r.account.tier, distribution: d }))
+  );
+
+  async function markPaid(accountId: string, distributionId: string) {
+    setMarkingPaidId(distributionId);
+    await fetch(`/api/admin/managed-accounts/${accountId}/distributions/${distributionId}/mark-paid`, {
+      method: 'POST',
+    });
+    setMarkingPaidId(null);
+    router.refresh();
+  }
 
   return (
     <div className="mx-auto max-w-4xl space-y-5 p-6">
@@ -41,6 +72,40 @@ export function ComplianceDashboard({ rows }: ComplianceDashboardProps) {
           {flagged.length} of {rows.length} managed accounts need attention.
         </p>
       </div>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Pending withdrawals ({pendingWithdrawals.length})</CardTitle>
+        </CardHeader>
+        <CardContent>
+          {pendingWithdrawals.length === 0 ? (
+            <p className="text-sm text-text-tertiary">No withdrawal requests awaiting payout.</p>
+          ) : (
+            <div className="space-y-2">
+              {pendingWithdrawals.map(({ accountId, tier, distribution }) => (
+                <div key={distribution.id} className="flex items-center justify-between border-b border-border py-2 text-sm last:border-0">
+                  <div>
+                    <span className="font-medium capitalize text-text-primary">{tier}</span>{' '}
+                    <span className="text-text-tertiary">
+                      {new Date(distribution.period_start).toLocaleDateString()} –{' '}
+                      {new Date(distribution.period_end).toLocaleDateString()}
+                    </span>
+                    <p className="text-xs text-text-tertiary">Net {formatCurrency(distribution.client_share)}</p>
+                  </div>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    isLoading={markingPaidId === distribution.id}
+                    onClick={() => markPaid(accountId, distribution.id)}
+                  >
+                    Mark paid
+                  </Button>
+                </div>
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
       <Card>
         <CardHeader>

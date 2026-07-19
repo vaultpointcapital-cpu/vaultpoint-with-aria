@@ -5,6 +5,7 @@ import { formatDistanceToNow } from 'date-fns';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils/cn';
+import { NotificationsList } from '@/components/managed-accounts/notifications-list';
 import type { ManagedAccountStats } from '@/lib/validations/managed-accounts';
 import type { ManagedTradeSide } from '@/types/database';
 
@@ -99,6 +100,8 @@ export function ManagedAccountDashboard({
           </Link>
         </div>
       )}
+
+      <NotificationsList accountId={account.id} />
 
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         <Card>
