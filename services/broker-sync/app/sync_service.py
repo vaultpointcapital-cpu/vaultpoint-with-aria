@@ -12,6 +12,7 @@ from .encryption import decrypt
 from .financial import calculate_position_value
 from .models import BrokerType
 from .redis_cache import cache_positions
+from .signal_outcomes import detect_and_record_outcomes
 from .supabase_client import get_service_client
 
 logger = logging.getLogger("broker_sync")
@@ -82,9 +83,8 @@ async def sync_connection(connection: dict) -> None:
         # last_synced_at. Only the error/status fields change.
         logger.warning("Broker sync failed for connection=%s (%s): %s", connection_id, broker.value, exc)
         await _mark_error(supabase, connection_id, str(exc)[:500])
-        return
-    finally:
         await client.aclose()
+        return
 
     rows = [
         {
@@ -104,7 +104,27 @@ async def sync_connection(connection: dict) -> None:
     ]
 
     await cache_positions(connection_id, rows)
-    await asyncio.to_thread(_reconcile_positions, supabase, connection_id, rows)
+
+    stale = await asyncio.to_thread(_get_stale_positions, supabase, connection_id, rows)
+
+    # Client stays open past here specifically so outcome detection can
+    # make its own follow-up broker call (closed-pnl / history-deals) for
+    # any position that just disappeared — closed BEFORE that call, never
+    # after, so a slow reconciliation can't block the rest of the poll
+    # cycle from completing on time.
+    if stale:
+        try:
+            await detect_and_record_outcomes(supabase, client, connection, stale)
+        except Exception:
+            logger.exception(
+                "signal_outcomes: detect_and_record_outcomes failed for connection=%s — "
+                "position sync continues regardless.",
+                connection_id,
+            )
+
+    await client.aclose()
+
+    await asyncio.to_thread(_reconcile_positions, supabase, connection_id, rows, stale)
     await asyncio.to_thread(
         lambda: supabase.table("broker_connections")
         .update(
@@ -206,22 +226,37 @@ async def _build_metatrader_client(supabase, connection: dict) -> MetaTraderClie
     return client
 
 
-def _reconcile_positions(supabase, connection_id: str, rows: list[dict]) -> None:
-    """positions is "replaced/upserted on each poll cycle, not an
-    append-only log" per the migration's own comment — so anything no
-    longer reported by the broker gets deleted, not left stale forever.
+def _get_stale_positions(supabase, connection_id: str, rows: list[dict]) -> list[dict]:
+    """Rows in `positions` for this connection whose (symbol, side) is no
+    longer in this cycle's freshly-fetched `rows` — i.e. positions that
+    were open last poll and have since closed. Returns full rows
+    (including synced_at, the last time each was confirmed still open)
+    so app/signal_outcomes.py has what it needs to look up realized PnL
+    for the window the position actually closed in; the delete itself
+    happens later, in _reconcile_positions, after that lookup has had a
+    chance to run.
     """
     open_keys = {(r["symbol"], r["side"]) for r in rows}
 
     existing = (
         supabase.table("positions")
-        .select("id, symbol, side")
+        .select("id, symbol, side, synced_at")
         .eq("broker_connection_id", connection_id)
         .execute()
     )
-    stale_ids = [row["id"] for row in existing.data if (row["symbol"], row["side"]) not in open_keys]
-    if stale_ids:
-        supabase.table("positions").delete().in_("id", stale_ids).execute()
+    return [row for row in existing.data if (row["symbol"], row["side"]) not in open_keys]
+
+
+def _reconcile_positions(supabase, connection_id: str, rows: list[dict], stale: list[dict]) -> None:
+    """positions is "replaced/upserted on each poll cycle, not an
+    append-only log" per the migration's own comment — so anything no
+    longer reported by the broker gets deleted, not left stale forever.
+    `stale` is _get_stale_positions's own output for this same cycle,
+    passed in rather than recomputed so the two functions can never
+    disagree on which rows are stale.
+    """
+    if stale:
+        supabase.table("positions").delete().in_("id", [row["id"] for row in stale]).execute()
 
     if rows:
         supabase.table("positions").upsert(rows, on_conflict="broker_connection_id,symbol,side").execute()

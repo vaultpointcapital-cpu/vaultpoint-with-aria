@@ -227,6 +227,32 @@ class MetaTraderClient(BrokerClient):
             )
         return positions
 
+    async def get_history_deals(self, *, start_time: str, end_time: str) -> list[dict]:
+        """GET history-deals for this account within [start_time,
+        end_time] (ISO8601 strings). Used only by
+        app/signal_outcomes.py to reconcile a Signal Mode/Managed Mode
+        execution against what MetaTrader actually realized when the
+        position closed — never used for live position display (that
+        stays get_positions()'s job).
+
+        NOTE: written from MetaApi's documented MetatraderDeal schema
+        (entryType/profit/commission/swap/volume/symbol per deal), not
+        verified against a live closed trade. Verify the endpoint path
+        and response shape against MetaApi's current client API docs
+        (or a sandbox account) before trusting this for a live billing
+        run.
+        """
+        host = self._client_api_host()
+        response = await self._request(
+            "GET",
+            f"{host}/users/current/accounts/{self.account_id}/history-deals/time/{start_time}/{end_time}",
+        )
+        if response.status_code != 200:
+            raise RuntimeError(
+                f"MetaApi history-deals request failed ({response.status_code}): {response.text[:300]}"
+            )
+        return response.json()
+
     async def get_balance(self) -> float:
         host = self._client_api_host()
         response = await self._request(

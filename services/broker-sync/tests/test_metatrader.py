@@ -413,3 +413,55 @@ class TestPlaceOrder:
                 stop_loss=1.09,
                 take_profit=1.12,
             )
+
+
+class TestGetHistoryDeals:
+    async def test_returns_the_raw_deal_list(self):
+        captured = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured["url"] = str(request.url)
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "symbol": "EURUSD",
+                        "entryType": "DEAL_ENTRY_OUT",
+                        "volume": 0.5,
+                        "profit": 42.5,
+                        "commission": -1.0,
+                        "swap": -0.2,
+                    }
+                ],
+            )
+
+        client = make_client(handler, account_id="acct-1", region="london")
+        deals = await client.get_history_deals(start_time="2026-07-18T00:00:00Z", end_time="2026-07-19T00:00:00Z")
+
+        assert "history-deals/time/2026-07-18T00:00:00Z/2026-07-19T00:00:00Z" in captured["url"]
+        assert deals == [
+            {
+                "symbol": "EURUSD",
+                "entryType": "DEAL_ENTRY_OUT",
+                "volume": 0.5,
+                "profit": 42.5,
+                "commission": -1.0,
+                "swap": -0.2,
+            }
+        ]
+
+    async def test_raises_on_non_200(self):
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(500, text="internal error")
+
+        client = make_client(handler, account_id="acct-1", region="london")
+        with pytest.raises(RuntimeError, match="history-deals request failed"):
+            await client.get_history_deals(start_time="2026-07-18T00:00:00Z", end_time="2026-07-19T00:00:00Z")
+
+    async def test_raises_when_not_provisioned(self):
+        def handler(request: httpx.Request) -> httpx.Response:
+            raise AssertionError("should not make an HTTP call before provisioning")
+
+        client = make_client(handler)
+        with pytest.raises(MetaTraderAccountNotReadyError):
+            await client.get_history_deals(start_time="2026-07-18T00:00:00Z", end_time="2026-07-19T00:00:00Z")

@@ -151,7 +151,7 @@ async def test_sync_connection_normalizes_caches_and_upserts(monkeypatch, fake_s
         sync_service.BROKER_CLIENTS, BrokerType.BYBIT, make_fake_client(positions=[position])
     )
     # No stale rows and no snapshot yet, so both branches run to completion.
-    fake_supabase.select_responses[("positions", "id, symbol, side")] = []
+    fake_supabase.select_responses[("positions", "id, symbol, side, synced_at")] = []
     fake_supabase.select_responses[("portfolio_snapshots", "id")] = []
     fake_supabase.select_responses[
         ("positions", "size, mark_price, entry_price, broker_connections(broker)")
@@ -213,7 +213,7 @@ async def test_sync_connection_uses_each_credential_field_own_iv(monkeypatch, fa
         return make_fake_client(positions=[])(api_key, api_secret, api_passphrase)
 
     monkeypatch.setitem(sync_service.BROKER_CLIENTS, BrokerType.BYBIT, _capturing_client)
-    fake_supabase.select_responses[("positions", "id, symbol, side")] = []
+    fake_supabase.select_responses[("positions", "id, symbol, side, synced_at")] = []
     fake_supabase.select_responses[("portfolio_snapshots", "id")] = [{"id": "already-exists"}]
 
     await sync_service.sync_connection(CONNECTION)
@@ -234,7 +234,7 @@ async def test_sync_connection_metatrader_password_uses_its_own_iv(monkeypatch, 
     monkeypatch.setattr(sync_service, "MetaTraderClient", _capturing_metatrader_client)
     monkeypatch.setattr(sync_service.settings, "metaapi_token", "fake-metaapi-token")
     connection = {**METATRADER_CONNECTION, "metaapi_account_id": "already-provisioned", "metaapi_region": "london"}
-    fake_supabase.select_responses[("positions", "id, symbol, side")] = []
+    fake_supabase.select_responses[("positions", "id, symbol, side, synced_at")] = []
     fake_supabase.select_responses[("portfolio_snapshots", "id")] = [{"id": "already-exists"}]
 
     await sync_service.sync_connection(connection)
@@ -254,11 +254,16 @@ async def test_sync_connection_deletes_only_stale_positions(monkeypatch, fake_su
     monkeypatch.setitem(
         sync_service.BROKER_CLIENTS, BrokerType.BYBIT, make_fake_client(positions=[position])
     )
-    fake_supabase.select_responses[("positions", "id, symbol, side")] = [
-        {"id": "still-open", "symbol": "ETHUSDT", "side": "short"},
-        {"id": "closed-now", "symbol": "BTCUSDT", "side": "long"},
+    fake_supabase.select_responses[("positions", "id, symbol, side, synced_at")] = [
+        {"id": "still-open", "symbol": "ETHUSDT", "side": "short", "synced_at": "2026-07-19T00:00:00+00:00"},
+        {"id": "closed-now", "symbol": "BTCUSDT", "side": "long", "synced_at": "2026-07-19T00:00:00+00:00"},
     ]
     fake_supabase.select_responses[("portfolio_snapshots", "id")] = [{"id": "already-exists"}]
+    # No signal_actions on file for either symbol in this test — outcome
+    # detection (app/signal_outcomes.py) must no-op cleanly rather than
+    # error when a closed position was never a Signal Mode/Managed Mode
+    # trade to begin with.
+    fake_supabase.select_responses[("signal_actions", "id, signal_id, executed_size")] = []
 
     await sync_service.sync_connection(CONNECTION)
 
@@ -268,6 +273,8 @@ async def test_sync_connection_deletes_only_stale_positions(monkeypatch, fake_su
 
     # A snapshot already exists for today — must not be touched again.
     assert fake_supabase.calls_for("portfolio_snapshots", "insert") == []
+    # BTCUSDT/long had no matching signal_actions — nothing recorded.
+    assert fake_supabase.calls_for("signal_outcomes", "insert") == []
 
 
 async def test_sync_connection_keeps_stale_data_on_broker_failure(monkeypatch, fake_supabase, fake_cache):
@@ -328,7 +335,7 @@ async def test_sync_connection_routes_binance_connections_to_binance_client(
         sync_service.BROKER_CLIENTS, BrokerType.BINANCE, make_fake_client(positions=[position])
     )
     connection = {**CONNECTION, "broker": "binance"}
-    fake_supabase.select_responses[("positions", "id, symbol, side")] = []
+    fake_supabase.select_responses[("positions", "id, symbol, side, synced_at")] = []
     fake_supabase.select_responses[("portfolio_snapshots", "id")] = [{"id": "already-exists"}]
 
     await sync_service.sync_connection(connection)
@@ -365,7 +372,7 @@ async def test_sync_connection_routes_kucoin_connections_and_decrypts_passphrase
         "encrypted_api_passphrase": "ciphertext-passphrase",
         "api_passphrase_iv": "iv-passphrase",
     }
-    fake_supabase.select_responses[("positions", "id, symbol, side")] = []
+    fake_supabase.select_responses[("positions", "id, symbol, side, synced_at")] = []
     fake_supabase.select_responses[("portfolio_snapshots", "id")] = [{"id": "already-exists"}]
 
     await sync_service.sync_connection(connection)
@@ -413,7 +420,7 @@ async def test_sync_connection_provisions_metatrader_on_first_sync(monkeypatch, 
         broker_source=BrokerType.METATRADER,
     )
     monkeypatch.setattr(sync_service, "MetaTraderClient", make_fake_metatrader_client(positions=[position]))
-    fake_supabase.select_responses[("positions", "id, symbol, side")] = []
+    fake_supabase.select_responses[("positions", "id, symbol, side, synced_at")] = []
     fake_supabase.select_responses[("portfolio_snapshots", "id")] = [{"id": "already-exists"}]
 
     await sync_service.sync_connection(METATRADER_CONNECTION)
@@ -446,7 +453,7 @@ async def test_sync_connection_skips_provisioning_when_already_provisioned(
     monkeypatch.setattr(sync_service, "MetaTraderClient", client_cls)
 
     connection = {**METATRADER_CONNECTION, "metaapi_account_id": "existing-id", "metaapi_region": "london"}
-    fake_supabase.select_responses[("positions", "id, symbol, side")] = []
+    fake_supabase.select_responses[("positions", "id, symbol, side, synced_at")] = []
     fake_supabase.select_responses[("portfolio_snapshots", "id")] = [{"id": "already-exists"}]
 
     await sync_service.sync_connection(connection)

@@ -188,6 +188,34 @@ class BybitClient(BrokerClient):
             )
         return positions
 
+    async def get_closed_pnl(self, *, symbol: str, start_time_ms: int, end_time_ms: int) -> list[dict]:
+        """GET /v5/position/closed-pnl — realized-PnL records for
+        positions closed within [start_time_ms, end_time_ms]. Used only
+        by app/signal_outcomes.py to reconcile a Signal Mode/Managed
+        Mode execution against what the broker actually realized when
+        the position closed; never used for live position display (that
+        stays get_positions()'s job, unrealized PnL only).
+
+        NOTE: written from Bybit's documented V5 response schema
+        (closedPnl/closedSize/orderId/updatedTime per entry), not
+        verified against a live closed trade. Verify against a real
+        Bybit account before trusting this for a live billing run —
+        same "flagged assumption, not silently final" treatment as
+        every other unverified-against-a-live-broker number in this
+        codebase.
+        """
+        body = await self._get(
+            "/v5/position/closed-pnl",
+            {
+                "category": "linear",
+                "symbol": symbol,
+                "startTime": str(start_time_ms),
+                "endTime": str(end_time_ms),
+                "limit": "50",
+            },
+        )
+        return body["result"]["list"]
+
     async def get_balance(self) -> float:
         body = await self._get("/v5/account/wallet-balance", {"accountType": "UNIFIED"})
         accounts = body["result"]["list"]

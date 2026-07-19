@@ -312,3 +312,58 @@ class TestPlaceOrder:
                 take_profit=70000,
                 order_link_id="signal-fail",
             )
+
+
+class TestGetClosedPnl:
+    async def test_returns_the_raw_closed_pnl_entries(self):
+        captured = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured["path"] = request.url.path
+            captured["params"] = dict(request.url.params)
+            return httpx.Response(
+                200,
+                json=ok_response(
+                    {
+                        "list": [
+                            {
+                                "symbol": "BTCUSDT",
+                                "orderId": "order-999",
+                                "closedPnl": "125.50",
+                                "closedSize": "0.01",
+                                "updatedTime": "1700000000000",
+                            }
+                        ]
+                    }
+                ),
+            )
+
+        client = make_client(handler)
+        entries = await client.get_closed_pnl(symbol="BTCUSDT", start_time_ms=1699999000000, end_time_ms=1700001000000)
+
+        assert captured["path"] == "/v5/position/closed-pnl"
+        assert captured["params"] == {
+            "category": "linear",
+            "symbol": "BTCUSDT",
+            "startTime": "1699999000000",
+            "endTime": "1700001000000",
+            "limit": "50",
+        }
+        assert entries == [
+            {
+                "symbol": "BTCUSDT",
+                "orderId": "order-999",
+                "closedPnl": "125.50",
+                "closedSize": "0.01",
+                "updatedTime": "1700000000000",
+            }
+        ]
+
+    async def test_returns_an_empty_list_when_nothing_closed_in_the_window(self):
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json=ok_response({"list": []}))
+
+        client = make_client(handler)
+        entries = await client.get_closed_pnl(symbol="BTCUSDT", start_time_ms=0, end_time_ms=1)
+
+        assert entries == []
