@@ -115,6 +115,31 @@ async def _disable_managed_mode(supabase, connection_id: str) -> None:
     )
 
 
+async def _still_enabled(supabase, connection_id: str) -> bool:
+    """Re-checks managed_mode_enabled immediately before executing.
+    evaluate_managed_mode() fetches the list of enabled connections only
+    ONCE, at the very top of a cycle — everything downstream (tier
+    check, kill switch, signal fetch, sizing) runs against that same
+    in-memory snapshot. Without this re-check, a user disabling Managed
+    Mode (or the DELETE /api/brokers/:id soft-disconnect path, which
+    also flips this flag) partway through an already-in-flight cycle
+    could still see one more trade execute for a connection that was
+    already queued up earlier in that same cycle — a real violation of
+    "no trade executes without opt-in TRUE at time of execution," even
+    though the window is bounded to one ~60s cycle at most. This closes
+    it down to the gap between this check and the execute_signal() call
+    immediately after it.
+    """
+    result = await asyncio.to_thread(
+        lambda: supabase.table("broker_connections")
+        .select("managed_mode_enabled")
+        .eq("id", connection_id)
+        .maybe_single()
+        .execute()
+    )
+    return bool((result.data or {}).get("managed_mode_enabled"))
+
+
 async def _kill_switch_tripped(supabase, connection: dict) -> bool:
     """Sums today's realized P&L (UTC) across every Aria-initiated,
     executed action on this connection. Two round trips rather than a
@@ -200,6 +225,14 @@ async def _attempt_execution(supabase, connection: dict, signal: dict, equity: f
     signal_id = signal["id"]
     connection_id = connection["id"]
     user_id = connection["user_id"]
+
+    if not await _still_enabled(supabase, connection_id):
+        logger.info(
+            "Managed Mode: connection=%s was disabled after this cycle started — skipping signal=%s.",
+            connection_id,
+            signal_id,
+        )
+        return
 
     units = _compute_size(connection, signal, equity)
     if units is None:

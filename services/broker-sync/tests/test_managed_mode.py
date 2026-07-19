@@ -46,7 +46,13 @@ SIGNAL = {
 
 
 def _supabase_with(
-    connections=None, tier="elite", signals=None, aria_action_ids=None, outcomes=None, prior_actions=None
+    connections=None,
+    tier="elite",
+    signals=None,
+    aria_action_ids=None,
+    outcomes=None,
+    prior_actions=None,
+    still_enabled=True,
 ) -> FakeSupabase:
     supabase = FakeSupabase()
     supabase.select_responses[("broker_connections", "*")] = connections if connections is not None else [CONNECTION]
@@ -59,6 +65,12 @@ def _supabase_with(
     supabase.select_responses[("signal_actions", "signal_id")] = (
         [{"signal_id": sid} for sid in prior_actions] if prior_actions else []
     )
+    # _attempt_execution's own fresh re-check, immediately before placing
+    # an order — defaults to still enabled so every test not specifically
+    # about this race doesn't need to configure it.
+    supabase.select_responses[("broker_connections", "managed_mode_enabled")] = [
+        {"managed_mode_enabled": still_enabled}
+    ]
     return supabase
 
 
@@ -305,6 +317,34 @@ async def test_records_failed_action_with_aria_initiator_on_broker_rejection(mon
     assert inserts[0].values["action"] == "failed"
     assert inserts[0].values["initiated_by"] == "aria"
     assert "insufficient balance" in inserts[0].values["failure_reason"]
+
+
+async def test_skips_execution_when_disabled_after_cycle_started(monkeypatch):
+    # Simulates the TOCTOU race this re-check exists to close: the cycle's
+    # top-level query already picked up this connection as enabled, but a
+    # user (or the soft-disconnect path) flipped managed_mode_enabled to
+    # False before _attempt_execution's own fresh check runs.
+    supabase = _supabase_with(still_enabled=False)
+    _patch_supabase(monkeypatch, supabase)
+    calls = patch_bybit_client(monkeypatch)
+
+    await evaluate_managed_mode()
+
+    assert supabase.calls_for("signal_actions", "insert") == []
+    # Never even reached order placement.
+    assert not any(c[0] == "place_order" for c in calls)
+
+
+async def test_still_executes_when_the_fresh_check_confirms_still_enabled(monkeypatch):
+    supabase = _supabase_with(still_enabled=True)
+    _patch_supabase(monkeypatch, supabase)
+    patch_bybit_client(monkeypatch, order_id="order-fresh-check")
+
+    await evaluate_managed_mode()
+
+    inserts = supabase.calls_for("signal_actions", "insert")
+    assert len(inserts) == 1
+    assert inserts[0].values["action"] == "executed"
 
 
 async def test_skips_connection_when_balance_read_fails(monkeypatch):
