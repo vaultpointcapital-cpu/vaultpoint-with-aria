@@ -87,12 +87,23 @@ export function SettingsClient({
               </p>
             )}
           </div>
-          {/* Billing isn't built yet — plain text, not a clickable link,
+          {/* Subscription plan management (upgrade/downgrade, payment
+              method) isn't built yet — plain text, not a clickable link,
               same pattern as the Markets page's Aria-locked state. */}
           <p className="text-xs font-medium text-text-tertiary">
             {tier === 'free' ? 'Upgrade' : 'Manage billing'} — coming soon
           </p>
         </div>
+        {tier === 'elite' && (
+          <div className="mt-3 border-t border-border pt-3">
+            <Link
+              href="/dashboard/billing/profit-share"
+              className="text-xs font-medium text-accent hover:underline"
+            >
+              View profit-share statements →
+            </Link>
+          </div>
+        )}
       </Card>
 
       {/* Connected brokers — links out rather than duplicating CRUD here */}

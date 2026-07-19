@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import type { BillingClient } from '@/lib/billing/profit-share';
 
 // Minimal chainable fake matching supabase-js's query builder shape well
 // enough for profit-share.ts's calls: plain `await supabase.from(x).select(...).eq(...)`
@@ -42,6 +43,16 @@ function makeFakeSupabase(responses: Record<string, unknown>) {
   };
 }
 
+// computeAttributedProfit/listAttributedTrades now take an explicit
+// client parameter (see profit-share.ts's own comment on why) — this
+// fake only duck-types the handful of query-builder methods those two
+// functions actually call, not the full SupabaseClient surface, so it
+// needs an explicit cast at the boundary rather than structurally
+// satisfying the real type.
+function asBillingClient(fake: ReturnType<typeof makeFakeSupabase>): BillingClient {
+  return fake as unknown as BillingClient;
+}
+
 const stripeMock = {
   customers: { retrieve: vi.fn() },
   paymentIntents: { create: vi.fn() },
@@ -81,7 +92,7 @@ describe('computeAttributedProfit', () => {
     fakeSupabase = makeFakeSupabase({ signal_actions: [] });
     const { computeAttributedProfit } = await import('@/lib/billing/profit-share');
 
-    const profit = await computeAttributedProfit('user-1', '2026-06-01', '2026-07-01');
+    const profit = await computeAttributedProfit(asBillingClient(fakeSupabase), 'user-1', '2026-06-01', '2026-07-01');
     expect(profit).toBe(0);
   });
 
@@ -92,8 +103,98 @@ describe('computeAttributedProfit', () => {
     });
     const { computeAttributedProfit } = await import('@/lib/billing/profit-share');
 
-    const profit = await computeAttributedProfit('user-1', '2026-06-01', '2026-07-01');
+    const profit = await computeAttributedProfit(asBillingClient(fakeSupabase), 'user-1', '2026-06-01', '2026-07-01');
     expect(profit).toBe(370);
+  });
+});
+
+describe('getCurrentCalendarMonthToDate', () => {
+  it('returns the 1st of the current month through tomorrow (exclusive upper bound)', async () => {
+    const { getCurrentCalendarMonthToDate } = await import('@/lib/billing/profit-share');
+    const result = getCurrentCalendarMonthToDate(new Date('2026-07-19T12:00:00Z'));
+    expect(result).toEqual({ periodStart: '2026-07-01', periodEnd: '2026-07-20' });
+  });
+
+  it('rolls the exclusive upper bound over a month boundary on the last day of the month', async () => {
+    const { getCurrentCalendarMonthToDate } = await import('@/lib/billing/profit-share');
+    const result = getCurrentCalendarMonthToDate(new Date('2026-07-31T12:00:00Z'));
+    expect(result).toEqual({ periodStart: '2026-07-01', periodEnd: '2026-08-01' });
+  });
+});
+
+describe('listAttributedTrades', () => {
+  it('returns an empty list when the user has no aria-initiated executed actions', async () => {
+    fakeSupabase = makeFakeSupabase({ signal_actions: [] });
+    const { listAttributedTrades } = await import('@/lib/billing/profit-share');
+
+    const trades = await listAttributedTrades(asBillingClient(fakeSupabase), 'user-1', '2026-06-01', '2026-07-01');
+    expect(trades).toEqual([]);
+  });
+
+  it('returns an empty list when no outcomes fall in the period, even with executed actions on file', async () => {
+    fakeSupabase = makeFakeSupabase({
+      signal_actions: [{ id: 'action-1', signal_id: 'signal-1', executed_size: 0.01 }],
+      signal_outcomes: [],
+    });
+    const { listAttributedTrades } = await import('@/lib/billing/profit-share');
+
+    const trades = await listAttributedTrades(asBillingClient(fakeSupabase), 'user-1', '2026-06-01', '2026-07-01');
+    expect(trades).toEqual([]);
+  });
+
+  it('joins actions, outcomes, and signals into itemized trades, sorted by closed_at', async () => {
+    fakeSupabase = makeFakeSupabase({
+      signal_actions: [
+        { id: 'action-1', signal_id: 'signal-1', executed_size: 0.01 },
+        { id: 'action-2', signal_id: 'signal-2', executed_size: 0.5 },
+      ],
+      signal_outcomes: [
+        { signal_action_id: 'action-2', realized_pnl: -30, result: 'loss', closed_at: '2026-06-05T00:00:00Z' },
+        { signal_action_id: 'action-1', realized_pnl: 200, result: 'win', closed_at: '2026-06-01T00:00:00Z' },
+      ],
+      signals: [
+        { id: 'signal-1', pair: 'BTCUSDT', direction: 'long' },
+        { id: 'signal-2', pair: 'EURUSD', direction: 'short' },
+      ],
+    });
+    const { listAttributedTrades } = await import('@/lib/billing/profit-share');
+
+    const trades = await listAttributedTrades(asBillingClient(fakeSupabase), 'user-1', '2026-06-01', '2026-07-01');
+
+    expect(trades).toEqual([
+      {
+        signalId: 'signal-1',
+        pair: 'BTCUSDT',
+        direction: 'long',
+        executedSize: 0.01,
+        realizedPnl: 200,
+        result: 'win',
+        closedAt: '2026-06-01T00:00:00Z',
+      },
+      {
+        signalId: 'signal-2',
+        pair: 'EURUSD',
+        direction: 'short',
+        executedSize: 0.5,
+        realizedPnl: -30,
+        result: 'loss',
+        closedAt: '2026-06-05T00:00:00Z',
+      },
+    ]);
+  });
+
+  it('drops an outcome whose signal_action or signal cannot be found rather than crashing', async () => {
+    fakeSupabase = makeFakeSupabase({
+      signal_actions: [{ id: 'action-1', signal_id: 'signal-missing', executed_size: 0.01 }],
+      signal_outcomes: [
+        { signal_action_id: 'action-1', realized_pnl: 200, result: 'win', closed_at: '2026-06-01T00:00:00Z' },
+      ],
+      signals: [],
+    });
+    const { listAttributedTrades } = await import('@/lib/billing/profit-share');
+
+    const trades = await listAttributedTrades(asBillingClient(fakeSupabase), 'user-1', '2026-06-01', '2026-07-01');
+    expect(trades).toEqual([]);
   });
 });
 

@@ -1,14 +1,9 @@
 import { createServiceClient } from '@/lib/supabase/server';
 import { getStripeClient } from '@/lib/billing/stripe';
 import type { ProfitShareStatus } from '@/types/database';
+import { PROFIT_SHARE_PCT, type AttributedTrade } from '@/lib/billing/profit-share-shared';
 
-/**
- * Percent of Aria-attributed profit charged as the monthly true-up.
- * Not specified anywhere in the spec text available to this build —
- * flagged as an assumption the same way ALERT_LIMITS_BY_TIER's numbers
- * are in src/lib/validations/alerts.ts, not silently picked as final.
- */
-export const PROFIT_SHARE_PCT = 20;
+export { PROFIT_SHARE_PCT, type AttributedTrade };
 
 /**
  * The previous full calendar month (UTC), as a [start, end) date pair —
@@ -30,6 +25,8 @@ export function getPreviousCalendarMonth(reference: Date = new Date()): {
   };
 }
 
+export type BillingClient = ReturnType<typeof createServiceClient>;
+
 /**
  * Sums realized_pnl from signal_outcomes joined (in two steps, not a
  * single query — see managed_mode.py's _kill_switch_tripped for the
@@ -38,14 +35,21 @@ export function getPreviousCalendarMonth(reference: Date = new Date()): {
  * Manual Signal Mode executions (initiated_by='user') never count
  * toward this — profit-share bills only on trades Aria placed
  * autonomously under Managed Mode.
+ *
+ * Takes an explicit client so the same logic serves two different
+ * trust contexts: the billing run (runProfitShareForUser, below) needs
+ * the service-role client since it runs across every user with no
+ * logged-in session; the user-facing statement routes
+ * (src/app/api/billing/profit-share) pass the caller's own RLS-scoped
+ * client instead, so a user viewing "this period so far" can never
+ * see anything RLS wouldn't already let them see directly.
  */
 export async function computeAttributedProfit(
+  supabase: BillingClient,
   userId: string,
   periodStart: string,
   periodEnd: string
 ): Promise<number> {
-  const supabase = createServiceClient();
-
   const { data: actions } = await supabase
     .from('signal_actions')
     .select('id')
@@ -64,6 +68,95 @@ export async function computeAttributedProfit(
     .lt('closed_at', periodEnd);
 
   return (outcomes ?? []).reduce((sum, o) => sum + o.realized_pnl, 0);
+}
+
+/**
+ * The current, still-in-progress calendar month, [1st, tomorrow) —
+ * unlike getPreviousCalendarMonth (a COMPLETED month, the only kind a
+ * billing run ever charges), this is for the user-facing "this period
+ * so far" preview: real trades that have already closed this month,
+ * even though the actual true-up charge for this period won't happen
+ * until it's over. periodEnd is tomorrow's date, not today's, so
+ * computeAttributedProfit's `lt('closed_at', periodEnd)` correctly
+ * includes everything closed earlier today (a timestamptz compared
+ * against today's bare date would otherwise exclude today entirely).
+ */
+export function getCurrentCalendarMonthToDate(reference: Date = new Date()): {
+  periodStart: string;
+  periodEnd: string;
+} {
+  const year = reference.getUTCFullYear();
+  const month = reference.getUTCMonth();
+  const periodStart = new Date(Date.UTC(year, month, 1));
+  const exclusiveEnd = new Date(Date.UTC(year, month, reference.getUTCDate() + 1));
+  return {
+    periodStart: periodStart.toISOString().slice(0, 10),
+    periodEnd: exclusiveEnd.toISOString().slice(0, 10),
+  };
+}
+
+/**
+ * The itemized trade list behind computeAttributedProfit's aggregate
+ * number — this is what makes a statement "itemized" rather than just
+ * a single total. Same [periodStart, periodEnd) window, same
+ * initiated_by='aria' + action='executed' filter, same explicit-client
+ * pattern and reasoning as computeAttributedProfit above. A trade
+ * whose signal_actions/signals rows can't be found (should be
+ * unreachable given the foreign keys, but this is real money reporting
+ * — silently dropped rather than surfaced as a broken row) is filtered
+ * out rather than crashing the whole statement.
+ */
+export async function listAttributedTrades(
+  supabase: BillingClient,
+  userId: string,
+  periodStart: string,
+  periodEnd: string
+): Promise<AttributedTrade[]> {
+  const { data: actions } = await supabase
+    .from('signal_actions')
+    .select('id, signal_id, executed_size')
+    .eq('user_id', userId)
+    .eq('initiated_by', 'aria')
+    .eq('action', 'executed');
+
+  const actionList = actions ?? [];
+  if (actionList.length === 0) return [];
+
+  const actionIds = actionList.map((a) => a.id);
+  const { data: outcomes } = await supabase
+    .from('signal_outcomes')
+    .select('signal_action_id, realized_pnl, result, closed_at')
+    .in('signal_action_id', actionIds)
+    .gte('closed_at', periodStart)
+    .lt('closed_at', periodEnd);
+
+  const outcomeList = outcomes ?? [];
+  if (outcomeList.length === 0) return [];
+
+  const signalIds = [...new Set(actionList.map((a) => a.signal_id))];
+  const { data: signals } = await supabase.from('signals').select('id, pair, direction').in('id', signalIds);
+
+  const actionById = new Map(actionList.map((a) => [a.id, a]));
+  const signalById = new Map((signals ?? []).map((s) => [s.id, s]));
+
+  const trades: AttributedTrade[] = [];
+  for (const outcome of outcomeList) {
+    const action = actionById.get(outcome.signal_action_id);
+    const signal = action ? signalById.get(action.signal_id) : undefined;
+    if (!action || !signal) continue;
+
+    trades.push({
+      signalId: action.signal_id,
+      pair: signal.pair,
+      direction: signal.direction as 'long' | 'short',
+      executedSize: action.executed_size ?? 0,
+      realizedPnl: outcome.realized_pnl,
+      result: outcome.result as 'win' | 'loss' | 'breakeven',
+      closedAt: outcome.closed_at,
+    });
+  }
+
+  return trades.sort((a, b) => a.closedAt.localeCompare(b.closedAt));
 }
 
 /**
@@ -161,7 +254,7 @@ export async function runProfitShareForUser(
     };
   }
 
-  const attributedProfit = await computeAttributedProfit(userId, periodStart, periodEnd);
+  const attributedProfit = await computeAttributedProfit(supabase, userId, periodStart, periodEnd);
 
   if (attributedProfit <= 0) {
     await supabase.from('profit_share_charges').insert({
