@@ -138,3 +138,41 @@ export function computeAccountStats(
     drawdownPct,
   };
 }
+
+export interface DistributionBreakdown {
+  grossPnl: number;
+  clientSharePct: number;
+  clientShare: number;
+  vaultpointShare: number;
+}
+
+/**
+ * The "Gross P&L -> Your share -> VaultPoint's share -> Net to you"
+ * breakdown the withdrawal flow's own acceptance criteria requires
+ * showing before the client confirms. VaultPoint only ever splits
+ * PROFIT, never principal or a loss — a negative or zero grossPnl
+ * returns a zero split with the full (zero-or-negative) amount as the
+ * client's share, never a negative vaultpointShare. Rounded to cents,
+ * same reasoning as profit-share.ts's runProfitShareForUser (a real
+ * payout must be a whole number of cents, even though grossPnl itself
+ * is an arbitrary-precision Postgres numeric).
+ */
+export function computeDistributionBreakdown(grossPnl: number, profitSplitPct: number): DistributionBreakdown {
+  if (grossPnl <= 0) {
+    return { grossPnl, clientSharePct: 100, clientShare: grossPnl, vaultpointShare: 0 };
+  }
+
+  const vaultpointShare = Math.round(grossPnl * (profitSplitPct / 100) * 100) / 100;
+  const clientShare = Math.round((grossPnl - vaultpointShare) * 100) / 100;
+
+  return { grossPnl, clientSharePct: 100 - profitSplitPct, clientShare, vaultpointShare };
+}
+
+export const withdrawalRequestSchema = z.object({
+  withdrawalType: z.enum(['profit', 'full_closure']),
+  payoutMethod: z.string().trim().min(1, 'Select a payout method'),
+  confirmUnderstanding: z.literal(true, {
+    errorMap: () => ({ message: 'You must confirm you understand this withdrawal before continuing' }),
+  }),
+});
+export type WithdrawalRequestInput = z.infer<typeof withdrawalRequestSchema>;

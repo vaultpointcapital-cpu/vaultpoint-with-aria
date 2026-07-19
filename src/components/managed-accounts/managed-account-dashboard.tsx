@@ -41,18 +41,37 @@ interface AuthorizationProp {
   signed_at: string;
 }
 
+interface DistributionProp {
+  id: string;
+  period_start: string;
+  period_end: string;
+  gross_pnl: number;
+  client_share: number;
+  vaultpoint_share: number;
+  status: string;
+  requested_at: string | null;
+  paid_at: string | null;
+}
+
 interface ManagedAccountDashboardProps {
   account: AccountProp;
   stats: ManagedAccountStats;
   trades: TradeProp[];
   authorization: AuthorizationProp | null;
+  distributions: DistributionProp[];
 }
 
 function formatCurrency(value: number): string {
   return value.toLocaleString('en-US', { style: 'currency', currency: 'USD' });
 }
 
-export function ManagedAccountDashboard({ account, stats, trades, authorization }: ManagedAccountDashboardProps) {
+export function ManagedAccountDashboard({
+  account,
+  stats,
+  trades,
+  authorization,
+  distributions,
+}: ManagedAccountDashboardProps) {
   return (
     <div className="mx-auto max-w-3xl space-y-5 p-6">
       <div className="flex items-center justify-between">
@@ -177,6 +196,36 @@ export function ManagedAccountDashboard({ account, stats, trades, authorization 
                     </p>
                   </div>
                 </div>
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Distribution history</CardTitle>
+        </CardHeader>
+        <CardContent>
+          {distributions.length === 0 ? (
+            <p className="text-sm text-text-tertiary">No withdrawals requested yet.</p>
+          ) : (
+            <div className="space-y-2">
+              {distributions.map((distribution) => (
+                <Link
+                  key={distribution.id}
+                  href={`/dashboard/managed-accounts/${account.id}/distributions/${distribution.id}`}
+                  className="flex items-center justify-between border-b border-border py-2 text-sm last:border-0 hover:text-accent"
+                >
+                  <div>
+                    <span className="font-medium text-text-primary">
+                      {new Date(distribution.period_start).toLocaleDateString()} –{' '}
+                      {new Date(distribution.period_end).toLocaleDateString()}
+                    </span>
+                    <p className="text-xs text-text-tertiary capitalize">{distribution.status}</p>
+                  </div>
+                  <span className="text-text-secondary">{formatCurrency(distribution.client_share)}</span>
+                </Link>
               ))}
             </div>
           )}

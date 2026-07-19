@@ -26,7 +26,7 @@ export default async function ManagedAccountDetailPage({ params }: { params: { i
     notFound();
   }
 
-  const [tradesResult, lastDistributionResult, authorizationResult] = await Promise.all([
+  const [tradesResult, lastDistributionResult, authorizationResult, distributionsResult] = await Promise.all([
     supabase
       .from('managed_trades')
       .select('symbol, side, size, entry_price, exit_price, realized_pnl, opened_at, closed_at')
@@ -47,6 +47,11 @@ export default async function ManagedAccountDetailPage({ params }: { params: { i
           .eq('id', account.client_authorization_id)
           .maybeSingle()
       : Promise.resolve({ data: null }),
+    supabase
+      .from('profit_distributions')
+      .select('id, period_start, period_end, gross_pnl, client_share, vaultpoint_share, status, requested_at, paid_at')
+      .eq('managed_account_id', account.id)
+      .order('period_end', { ascending: false }),
   ]);
 
   const trades = tradesResult.data ?? [];
@@ -62,6 +67,7 @@ export default async function ManagedAccountDetailPage({ params }: { params: { i
       stats={stats}
       trades={trades}
       authorization={authorizationResult.data}
+      distributions={distributionsResult.data ?? []}
     />
   );
 }

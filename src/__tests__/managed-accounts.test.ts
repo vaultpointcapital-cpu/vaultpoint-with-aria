@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { computeAccountStats, isEligibleForManagedTier } from '@/lib/validations/managed-accounts';
+import { computeAccountStats, computeDistributionBreakdown, isEligibleForManagedTier } from '@/lib/validations/managed-accounts';
 
 describe('isEligibleForManagedTier', () => {
   it('allows a Pro user into bronze and silver but not gold', () => {
@@ -80,5 +80,36 @@ describe('computeAccountStats', () => {
   it('never reports negative drawdown for a peak balance of zero', () => {
     const result = computeAccountStats(0, [], null);
     expect(result.drawdownPct).toBe(0);
+  });
+});
+
+describe('computeDistributionBreakdown', () => {
+  it('splits a positive gross P&L by the tier profit split percentage', () => {
+    const result = computeDistributionBreakdown(1000, 20);
+    expect(result).toEqual({ grossPnl: 1000, clientSharePct: 80, clientShare: 800, vaultpointShare: 200 });
+  });
+
+  it('rounds to the nearest cent', () => {
+    const result = computeDistributionBreakdown(100.01, 30);
+    // vaultpointShare = round(100.01 * 0.30 * 100) / 100 = round(3000.3) / 100 = 30.00
+    // clientShare = round((100.01 - 30) * 100) / 100 = 70.01
+    expect(result.vaultpointShare).toBe(30);
+    expect(result.clientShare).toBe(70.01);
+    expect(result.clientShare + result.vaultpointShare).toBeCloseTo(100.01, 5);
+  });
+
+  it('gives the client 100% of a zero-or-negative gross P&L — VaultPoint never splits a loss', () => {
+    expect(computeDistributionBreakdown(0, 25)).toEqual({
+      grossPnl: 0,
+      clientSharePct: 100,
+      clientShare: 0,
+      vaultpointShare: 0,
+    });
+    expect(computeDistributionBreakdown(-500, 25)).toEqual({
+      grossPnl: -500,
+      clientSharePct: 100,
+      clientShare: -500,
+      vaultpointShare: 0,
+    });
   });
 });
