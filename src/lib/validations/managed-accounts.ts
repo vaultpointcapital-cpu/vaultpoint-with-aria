@@ -83,3 +83,58 @@ export const fundManagedAccountSchema = z.object({
   startingCapital: z.coerce.number().positive('Starting capital must be greater than 0'),
 });
 export type FundManagedAccountInput = z.infer<typeof fundManagedAccountSchema>;
+
+export interface ManagedAccountStats {
+  currentBalance: number;
+  allTimePnl: number;
+  pnlSinceLastDistribution: number;
+  peakBalance: number;
+  drawdownPct: number;
+}
+
+/**
+ * Computes balance/P&L/drawdown from a chronological trade history —
+ * no separate running-balance or peak-balance snapshot table exists for
+ * managed_accounts (unlike portfolio_snapshots for the regular
+ * aggregator), so this walks trades in closed_at order and tracks the
+ * running balance and its high-water mark directly. Correct as long as
+ * `trades` is every closed trade for this account and `startingCapital`
+ * is the account's actual funded amount — both true of what
+ * GET /api/managed-accounts/:id passes in.
+ *
+ * drawdownPct is peak-to-current, matching the "Drawdown-to-date vs.
+ * stated max drawdown policy" dashboard requirement — not peak-to-lowest
+ * (that would show a stale number once the account has recovered).
+ */
+export function computeAccountStats(
+  startingCapital: number,
+  trades: { realized_pnl: number | null; closed_at: string | null }[],
+  lastDistributionPeriodEnd: string | null
+): ManagedAccountStats {
+  const closedTrades = trades
+    .filter((t): t is { realized_pnl: number; closed_at: string } => t.realized_pnl !== null && t.closed_at !== null)
+    .sort((a, b) => a.closed_at.localeCompare(b.closed_at));
+
+  let runningBalance = startingCapital;
+  let peakBalance = startingCapital;
+  let pnlSinceLastDistribution = 0;
+
+  for (const trade of closedTrades) {
+    runningBalance += trade.realized_pnl;
+    if (runningBalance > peakBalance) peakBalance = runningBalance;
+    if (!lastDistributionPeriodEnd || trade.closed_at >= lastDistributionPeriodEnd) {
+      pnlSinceLastDistribution += trade.realized_pnl;
+    }
+  }
+
+  const allTimePnl = runningBalance - startingCapital;
+  const drawdownPct = peakBalance > 0 ? Math.max(0, ((peakBalance - runningBalance) / peakBalance) * 100) : 0;
+
+  return {
+    currentBalance: runningBalance,
+    allTimePnl,
+    pnlSinceLastDistribution,
+    peakBalance,
+    drawdownPct,
+  };
+}
