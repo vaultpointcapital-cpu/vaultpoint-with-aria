@@ -576,11 +576,14 @@ export interface Database {
         Update: never; // a period's outcome, once recorded, is final — rerun as a new period instead
         Relationships: [];
       };
-      // Append-only audit log — no update/delete policy for any role.
+      // No delete policy for any role. One legitimate update exists —
+      // PATCH /api/managed-accounts/disclosure-view/:id sets
+      // scrolled_to_bottom_at once the client finishes reading; nothing
+      // else about a disclosure view row is ever revised after insert.
       disclosure_views: {
         Row: DisclosureView;
-        Insert: Omit<DisclosureView, 'id' | 'created_at'>;
-        Update: never;
+        Insert: Omit<DisclosureView, 'id' | 'created_at' | 'viewed_at'> & { viewed_at?: string };
+        Update: Pick<DisclosureView, 'scrolled_to_bottom_at'>;
         Relationships: [];
       };
       client_authorizations: {
