@@ -1,0 +1,336 @@
+// End-to-end billing cycle test — Day 1 of the launch sprint ("Billing:
+// test mode, Stripe + Paystack"). Simulates signup -> subscribe -> webhook
+// -> DB tier update for Free/Pro/Elite across both processors, calling the
+// REAL webhook route handlers (src/app/api/webhooks/{stripe,paystack}/
+// route.ts) — not a reimplementation of their logic — so this actually
+// exercises the code that runs in production.
+//
+// This test is what caught a real launch-blocking bug: the webhook
+// handlers only ever wrote to the `subscriptions` table, never to
+// `users.subscription_tier` — the column every feature-gating route (and
+// the profit-share billing cron) actually reads. A user could pay
+// successfully and still be gated as 'free' forever. Fixed in
+// src/lib/billing/get-user-tier.ts (syncUserSubscriptionTier), wired into
+// both webhook handlers. This script is the regression test for that fix.
+//
+// Usage: node --env-file=.env.local scripts/test-billing-cycle.mjs
+// Requires SHADOW_DB_URL, SHADOW_SUPABASE_URL, SHADOW_SUPABASE_SERVICE_ROLE_KEY
+// (shadow project's own Admin API credentials — same safety property as
+// scripts/test-rls-isolation.mjs: this script only ever reads the
+// SHADOW_*-named variables, never the live ones, by construction) and
+// Stripe/Paystack TEST-mode keys (STRIPE_SECRET_KEY starting sk_test_,
+// PAYSTACK_SECRET_KEY starting sk_test_) plus STRIPE_PRICE_PRO/ELITE and
+// PAYSTACK_PLAN_PRO/ELITE (test-mode price/plan ids).
+import { createClient } from '@supabase/supabase-js';
+import Stripe from 'stripe';
+import crypto from 'node:crypto';
+import { readFileSync } from 'node:fs';
+
+for (const line of readFileSync('.env.local', 'utf8').split('\n')) {
+  const m = line.match(/^([A-Z0-9_]+)=(.*)$/);
+  if (m) process.env[m[1]] = m[2];
+}
+
+const SHADOW_SUPABASE_URL = process.env.SHADOW_SUPABASE_URL;
+const SHADOW_SERVICE_ROLE_KEY = process.env.SHADOW_SUPABASE_SERVICE_ROLE_KEY;
+const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY;
+const PAYSTACK_SECRET_KEY = process.env.PAYSTACK_SECRET_KEY;
+
+if (!SHADOW_SUPABASE_URL || !SHADOW_SERVICE_ROLE_KEY) {
+  console.error('Missing SHADOW_SUPABASE_URL / SHADOW_SUPABASE_SERVICE_ROLE_KEY in .env.local');
+  process.exit(1);
+}
+if (!STRIPE_SECRET_KEY?.startsWith('sk_test_')) {
+  console.error('STRIPE_SECRET_KEY is not a TEST key (must start sk_test_) — refusing to run against a non-test key.');
+  process.exit(1);
+}
+if (!PAYSTACK_SECRET_KEY?.startsWith('sk_test')) {
+  console.error('PAYSTACK_SECRET_KEY is not a TEST key (must start sk_test) — refusing to run against a non-test key.');
+  process.exit(1);
+}
+
+// A dummy value is fine here: Stripe's constructEvent() only checks that
+// the HMAC in the header matches this secret — it never calls Stripe's
+// servers to validate it, so signing and verifying with the same local
+// value is a legitimate, fully offline test of the signature-checking
+// code path itself.
+const TEST_WEBHOOK_SECRET = 'whsec_test_local_billing_cycle_' + crypto.randomBytes(8).toString('hex');
+process.env.STRIPE_WEBHOOK_SECRET = TEST_WEBHOOK_SECRET;
+
+const stripe = new Stripe(STRIPE_SECRET_KEY, { apiVersion: '2026-06-24.dahlia' });
+const shadowAdmin = createClient(SHADOW_SUPABASE_URL, SHADOW_SERVICE_ROLE_KEY);
+
+let failures = 0;
+function report(label, condition, detail) {
+  if (condition) {
+    console.log(`  PASS  ${label}`);
+  } else {
+    console.error(`  FAIL  ${label}${detail ? ` — ${detail}` : ''}`);
+    failures += 1;
+  }
+}
+
+/** Runs fn with NEXT_PUBLIC_SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY pointed
+ * at the shadow project, so the real webhook route handlers (which call
+ * createServiceClient() internally) write to shadow instead of live.
+ * Restores the previous values afterward regardless of outcome. */
+async function withShadowAsLive(fn) {
+  const prevUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const prevKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  process.env.NEXT_PUBLIC_SUPABASE_URL = SHADOW_SUPABASE_URL;
+  process.env.SUPABASE_SERVICE_ROLE_KEY = SHADOW_SERVICE_ROLE_KEY;
+  try {
+    return await fn();
+  } finally {
+    process.env.NEXT_PUBLIC_SUPABASE_URL = prevUrl;
+    process.env.SUPABASE_SERVICE_ROLE_KEY = prevKey;
+  }
+}
+
+async function createTestUser(email) {
+  const { data, error } = await shadowAdmin.auth.admin.createUser({
+    email,
+    password: 'BillingTest!2026x',
+    email_confirm: true,
+  });
+  if (error) throw new Error(`createUser(${email}) failed: ${error.message}`);
+  return data.user.id;
+}
+
+async function deleteTestUser(userId) {
+  await shadowAdmin.auth.admin.deleteUser(userId).catch(() => {});
+}
+
+async function getUsersRow(userId) {
+  const { data } = await shadowAdmin.from('users').select('subscription_tier').eq('id', userId).single();
+  return data;
+}
+
+async function getSubscriptionRow(userId) {
+  const { data } = await shadowAdmin
+    .from('subscriptions')
+    .select('*')
+    .eq('user_id', userId)
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  return data;
+}
+
+// ---------------------------------------------------------------------
+// Free tier — no processor involved, just confirms a fresh signup lands
+// on 'free' with no subscriptions row (the implicit default every gating
+// route falls back to).
+// ---------------------------------------------------------------------
+async function testFreeTier() {
+  console.log('\n=== Free tier (no processor) ===');
+  const userId = await createTestUser(`billing-test-free-${Date.now()}@example.invalid`);
+  try {
+    const usersRow = await getUsersRow(userId);
+    report('fresh signup has users.subscription_tier = free', usersRow?.subscription_tier === 'free');
+
+    const sub = await getSubscriptionRow(userId);
+    report('fresh signup has no subscriptions row', sub === null);
+  } finally {
+    await deleteTestUser(userId);
+  }
+}
+
+// ---------------------------------------------------------------------
+// Stripe — creates a REAL test-mode customer + subscription (using
+// Stripe's built-in test payment method, no real card), then fires the
+// same webhook events Stripe would actually send, at the real route
+// handler, and asserts shadow DB state.
+// ---------------------------------------------------------------------
+async function stripeEventRequest(event) {
+  const { POST } = await import('../src/app/api/webhooks/stripe/route.ts');
+  const payload = JSON.stringify(event);
+  const signature = stripe.webhooks.generateTestHeaderString({ payload, secret: TEST_WEBHOOK_SECRET });
+  const { NextRequest } = await import('next/server');
+  const request = new NextRequest('https://vaultpoint.name.ng/api/webhooks/stripe', {
+    method: 'POST',
+    body: payload,
+    headers: { 'stripe-signature': signature },
+  });
+  return withShadowAsLive(() => POST(request));
+}
+
+async function testStripeTier(tier) {
+  console.log(`\n=== Stripe — ${tier} ===`);
+  const priceEnvVar = tier === 'pro' ? 'STRIPE_PRICE_PRO' : 'STRIPE_PRICE_ELITE';
+  const priceId = process.env[priceEnvVar];
+  if (!priceId) {
+    report(`${priceEnvVar} is set`, false, 'skipping Stripe ' + tier);
+    return;
+  }
+
+  const userId = await createTestUser(`billing-test-stripe-${tier}-${Date.now()}@example.invalid`);
+  let customer, subscription;
+  try {
+    customer = await stripe.customers.create({
+      email: `billing-test-stripe-${tier}-${Date.now()}@example.invalid`,
+    });
+
+    const paymentMethod = await stripe.paymentMethods.create({
+      type: 'card',
+      card: { token: 'tok_visa' },
+    });
+    await stripe.paymentMethods.attach(paymentMethod.id, { customer: customer.id });
+    await stripe.customers.update(customer.id, {
+      invoice_settings: { default_payment_method: paymentMethod.id },
+    });
+
+    subscription = await stripe.subscriptions.create({
+      customer: customer.id,
+      items: [{ price: priceId }],
+      default_payment_method: paymentMethod.id,
+    });
+
+    report('real Stripe test subscription created as active', subscription.status === 'active', subscription.status);
+
+    // --- checkout.session.completed: initial subscribe ---
+    await stripeEventRequest({
+      id: `evt_test_checkout_${Date.now()}`,
+      type: 'checkout.session.completed',
+      data: {
+        object: {
+          client_reference_id: userId,
+          subscription: subscription.id,
+          customer: customer.id,
+        },
+      },
+    });
+
+    let subRow = await getSubscriptionRow(userId);
+    report(`subscriptions row created with tier=${tier}`, subRow?.tier === tier, JSON.stringify(subRow));
+    report('subscriptions row status=active', subRow?.status === 'active');
+
+    let usersRow = await getUsersRow(userId);
+    report(`users.subscription_tier synced to ${tier}`, usersRow?.subscription_tier === tier, JSON.stringify(usersRow));
+
+    // --- customer.subscription.deleted: cancellation revokes access ---
+    await stripeEventRequest({
+      id: `evt_test_cancel_${Date.now()}`,
+      type: 'customer.subscription.deleted',
+      data: { object: { id: subscription.id } },
+    });
+
+    subRow = await getSubscriptionRow(userId);
+    report('subscriptions row status=cancelled after cancellation', subRow?.status === 'cancelled');
+
+    usersRow = await getUsersRow(userId);
+    report('users.subscription_tier reset to free after cancellation', usersRow?.subscription_tier === 'free', JSON.stringify(usersRow));
+  } finally {
+    if (subscription) await stripe.subscriptions.cancel(subscription.id).catch(() => {});
+    if (customer) await stripe.customers.del(customer.id).catch(() => {});
+    await deleteTestUser(userId);
+  }
+}
+
+// ---------------------------------------------------------------------
+// Paystack — no outbound API call needed (the handler trusts the signed
+// webhook payload directly), so this signs a synthetic payload with the
+// real test PAYSTACK_SECRET_KEY and posts it at the real route handler.
+// ---------------------------------------------------------------------
+function signPaystackPayload(payload) {
+  return crypto.createHmac('sha512', PAYSTACK_SECRET_KEY).update(payload).digest('hex');
+}
+
+async function paystackEventRequest(event) {
+  const { POST } = await import('../src/app/api/webhooks/paystack/route.ts');
+  const payload = JSON.stringify(event);
+  const signature = signPaystackPayload(payload);
+  const { NextRequest } = await import('next/server');
+  const request = new NextRequest('https://vaultpoint.name.ng/api/webhooks/paystack', {
+    method: 'POST',
+    body: payload,
+    headers: { 'x-paystack-signature': signature },
+  });
+  const response = await withShadowAsLive(() => POST(request));
+  if (!response.ok) {
+    console.error(`  [paystack webhook] ${event.event} -> ${response.status}:`, await response.clone().text());
+  }
+  return response;
+}
+
+async function testPaystackTier(tier) {
+  console.log(`\n=== Paystack — ${tier} ===`);
+  const planEnvVar = tier === 'pro' ? 'PAYSTACK_PLAN_PRO' : 'PAYSTACK_PLAN_ELITE';
+  const planCode = process.env[planEnvVar];
+  if (!planCode) {
+    report(`${planEnvVar} is set`, false, 'skipping Paystack ' + tier);
+    return;
+  }
+
+  const userId = await createTestUser(`billing-test-paystack-${tier}-${Date.now()}@example.invalid`);
+  const customerCode = `CUS_test_${crypto.randomBytes(6).toString('hex')}`;
+  const subscriptionCode = `SUB_test_${crypto.randomBytes(6).toString('hex')}`;
+
+  try {
+    // --- charge.success: initial subscribe ---
+    await paystackEventRequest({
+      event: 'charge.success',
+      data: {
+        id: Date.now(),
+        status: 'success',
+        customer: { customer_code: customerCode, email: 'billing-test@example.invalid' },
+        plan: { plan_code: planCode },
+        metadata: { user_id: userId },
+        authorization: { authorization_code: `AUTH_test_${Date.now()}`, reusable: true },
+      },
+    });
+
+    let subRow = await getSubscriptionRow(userId);
+    report(`subscriptions row created with tier=${tier}`, subRow?.tier === tier, JSON.stringify(subRow));
+    report('subscriptions row status=active', subRow?.status === 'active');
+
+    let usersRow = await getUsersRow(userId);
+    report(`users.subscription_tier synced to ${tier}`, usersRow?.subscription_tier === tier, JSON.stringify(usersRow));
+
+    // --- subscription.create: Paystack backfills the subscription_code ---
+    await paystackEventRequest({
+      event: 'subscription.create',
+      data: {
+        customer: { customer_code: customerCode },
+        subscription_code: subscriptionCode,
+        next_payment_date: new Date(Date.now() + 30 * 86400 * 1000).toISOString(),
+      },
+    });
+
+    subRow = await getSubscriptionRow(userId);
+    report('subscriptions row backfilled with provider_subscription_id', subRow?.provider_subscription_id === subscriptionCode);
+
+    // --- subscription.disable: cancellation revokes access ---
+    await paystackEventRequest({
+      event: 'subscription.disable',
+      data: { subscription_code: subscriptionCode },
+    });
+
+    subRow = await getSubscriptionRow(userId);
+    report('subscriptions row status=cancelled after disable', subRow?.status === 'cancelled');
+
+    usersRow = await getUsersRow(userId);
+    report('users.subscription_tier reset to free after disable', usersRow?.subscription_tier === 'free', JSON.stringify(usersRow));
+  } finally {
+    await deleteTestUser(userId);
+  }
+}
+
+async function main() {
+  console.log('Billing cycle test — TEST MODE only (Stripe sk_test_*, Paystack sk_test*)');
+  console.log('Writing to SHADOW Supabase project:', SHADOW_SUPABASE_URL);
+
+  await testFreeTier();
+  await testStripeTier('pro');
+  await testStripeTier('elite');
+  await testPaystackTier('pro');
+  await testPaystackTier('elite');
+
+  console.log(`\n${failures === 0 ? 'All billing cycle checks passed.' : `${failures} check(s) FAILED.`}`);
+  process.exit(failures === 0 ? 0 : 1);
+}
+
+main().catch((err) => {
+  console.error('FAILED:', err);
+  process.exit(1);
+});
