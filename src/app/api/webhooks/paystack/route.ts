@@ -95,16 +95,29 @@ export async function POST(request: NextRequest) {
             })
             .eq('id', existing.id);
         } else {
-          await supabase.from('subscriptions').insert({
-            user_id: userId,
-            payment_provider: 'paystack',
-            provider_subscription_id: null,
-            provider_customer_id: customerCode ?? null,
-            paystack_authorization_code: authorizationCode ?? null,
-            tier: tier ?? 'pro',
-            status: 'active',
-            current_period_end: null,
-          });
+          // upsert, not insert: the select above and this write aren't
+          // atomic, so a concurrent charge.success delivery for the same
+          // brand-new customer could land in between and also see
+          // existing === null. idx_subscriptions_provider_customer_unique
+          // (20260720000001_fix_subscriptions_race_and_drift.sql) makes
+          // that a conflict instead of a duplicate row — onConflict
+          // reconciles it the same way the "existing" branch above would,
+          // rather than erroring out and losing this event.
+          await supabase
+            .from('subscriptions')
+            .upsert(
+              {
+                user_id: userId,
+                payment_provider: 'paystack',
+                provider_subscription_id: null,
+                provider_customer_id: customerCode ?? null,
+                paystack_authorization_code: authorizationCode ?? null,
+                tier: tier ?? 'pro',
+                status: 'active',
+                current_period_end: null,
+              },
+              { onConflict: 'payment_provider,provider_customer_id' }
+            );
         }
         break;
       }
