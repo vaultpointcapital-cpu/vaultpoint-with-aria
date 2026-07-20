@@ -61,6 +61,13 @@ export type User = {
   // audit export) — set directly via Table Editor, no self-service UI
   // grants this. See 20260718000004_add_managed_accounts.sql.
   is_admin: boolean;
+  // See 20260720000000_add_email_confirmation_retry_flag.sql — signup's
+  // own Resend send (src/app/api/auth/signup/route.ts) sets this true on
+  // failure; POST /api/auth/resend-confirmation clears it on retry.
+  confirmation_email_pending_retry: boolean;
+  // Set once, the first time GET /auth/callback confirms this user's
+  // email — null means the welcome email has never been sent.
+  welcome_email_sent_at: string | null;
   created_at: string;
   updated_at: string;
 };
