@@ -47,9 +47,15 @@ const serwist = new Serwist({
     },
     // No authenticated document is ever cached, for the same reason.
     // (dashboard) is a route GROUP in src/app — it doesn't appear in the
-    // URL, the real path is /dashboard/*.
+    // URL, the real path is /dashboard/*. /onboarding is a sibling route
+    // under the same (dashboard) group (src/app/(dashboard)/onboarding) —
+    // it requires login too (redirects to /login otherwise) but doesn't
+    // share the /dashboard URL prefix, so it needs its own explicit rule.
+    // Previously flagged as an open question rather than decided
+    // unilaterally; now resolved per direction — an authenticated
+    // financial page must never be cached, regardless of URL prefix.
     {
-      matcher: ({ url }) => url.pathname.startsWith('/dashboard'),
+      matcher: ({ url }) => url.pathname.startsWith('/dashboard') || url.pathname.startsWith('/onboarding'),
       handler: new NetworkOnly(),
     },
     // Everything else that's a real page load (/, /login, /signup, and
