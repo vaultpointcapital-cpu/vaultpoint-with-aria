@@ -129,8 +129,19 @@ export default function SignupPage() {
           </Button>
 
           <p className="text-center text-xs text-text-tertiary">
-            By signing up you agree this is a tracking tool only — VaultPoint never executes
-            trades on your behalf.
+            By creating an account you agree to VaultPoint&apos;s{' '}
+            <Link href="/terms" className="text-accent hover:underline">
+              Terms
+            </Link>
+            ,{' '}
+            <Link href="/privacy" className="text-accent hover:underline">
+              Privacy Policy
+            </Link>
+            , and{' '}
+            <Link href="/risk-disclosure" className="text-accent hover:underline">
+              Risk Disclosure
+            </Link>
+            .
           </p>
         </form>
 
