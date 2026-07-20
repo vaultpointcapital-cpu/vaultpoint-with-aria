@@ -39,10 +39,23 @@ const nextConfig = {
   },
 };
 
-// No Sentry (or any other) wrapper exists in this config yet — withSerwist
-// is the only wrapper here, so there's no composition-order question to
-// resolve. If Sentry's withSentryConfig is added later, it should wrap
-// the OUTSIDE (module.exports = withSentryConfig(withSerwist(nextConfig), ...)),
-// matching Sentry's own documented convention of being the outermost wrapper
-// so its build-time instrumentation sees the final compiled output.
-module.exports = withSerwist(nextConfig);
+const { withSentryConfig } = require('@sentry/nextjs');
+
+// Sentry wraps the OUTSIDE of withSerwist, per Sentry's own documented
+// convention — its build-time instrumentation needs to see the final
+// compiled output, not have Serwist wrap around it afterward.
+//
+// org/project/authToken are all read from env and every one of them is
+// currently unset (no Sentry project exists yet — see
+// src/instrumentation.ts's own comment). withSentryConfig degrades
+// gracefully without them: source-map upload is silently skipped, the
+// rest of the build proceeds normally. silent:true keeps that skip quiet
+// instead of a wall of "not configured" warnings on every build.
+module.exports = withSentryConfig(withSerwist(nextConfig), {
+  org: process.env.SENTRY_ORG,
+  project: process.env.SENTRY_PROJECT,
+  authToken: process.env.SENTRY_AUTH_TOKEN,
+  silent: true,
+  widenClientFileUpload: true,
+  treeshake: { removeDebugLogging: true },
+});
