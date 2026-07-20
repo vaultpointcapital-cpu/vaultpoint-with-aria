@@ -3,11 +3,13 @@ import './globals.css';
 import { SiteFooter } from '@/components/layout/site-footer';
 
 export const metadata: Metadata = {
+  metadataBase: new URL(process.env.NEXT_PUBLIC_APP_URL ?? 'https://vaultpoint.name.ng'),
   title: 'VaultPoint — Unified Portfolio & Savings',
   description:
     'Track your crypto, forex, and savings goals in one place. Built for traders, by traders.',
   icons: {
     icon: [
+      { url: '/favicon.ico', sizes: 'any' },
       { url: '/icons/favicon-16.png', sizes: '16x16', type: 'image/png' },
       { url: '/icons/favicon-32.png', sizes: '32x32', type: 'image/png' },
       { url: '/icons/icon-192.png', sizes: '192x192', type: 'image/png' },
@@ -18,6 +20,21 @@ export const metadata: Metadata = {
     capable: true,
     statusBarStyle: 'black-translucent',
     title: 'VaultPoint',
+  },
+  openGraph: {
+    title: 'VaultPoint — Unified Portfolio & Savings',
+    description:
+      'Track your crypto, forex, and savings goals in one place. Built for traders, by traders.',
+    url: 'https://vaultpoint.name.ng',
+    siteName: 'VaultPoint',
+    images: [{ url: '/og-image.png', width: 1200, height: 630 }],
+  },
+  twitter: {
+    card: 'summary_large_image',
+    title: 'VaultPoint — Unified Portfolio & Savings',
+    description:
+      'Track your crypto, forex, and savings goals in one place. Built for traders, by traders.',
+    images: ['/og-image.png'],
   },
 };
 

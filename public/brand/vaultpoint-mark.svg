@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="180 120 700 700" width="700" height="700">
+  <defs>
+    <radialGradient id="pointGlow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#00E5A0" stop-opacity="0.4"/>
+      <stop offset="1" stop-color="#00E5A0" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="vStroke" x1="310" y1="336" x2="478" y2="714" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#8A83FF"/>
+      <stop offset="1" stop-color="#6C63FF"/>
+    </linearGradient>
+  </defs>
+  <g transform="translate(0,0) scale(1)">
+    <line x1="288" y1="396" x2="752" y2="396" stroke="#4A5168" stroke-width="10"
+          stroke-linecap="round" stroke-dasharray="4 34" opacity="0.55"/>
+    <polyline points="310,396 478,714 688,336" fill="none" stroke="url(#vStroke)"
+              stroke-width="104" stroke-linecap="round" stroke-linejoin="round"/>
+    <circle cx="726" cy="268" r="120" fill="url(#pointGlow)"/>
+    <circle cx="726" cy="268" r="40" fill="#00E5A0"/>
+  </g>
+</svg>
