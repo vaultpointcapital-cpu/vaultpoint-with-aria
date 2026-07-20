@@ -2,6 +2,7 @@ import { type NextRequest, NextResponse } from 'next/server';
 import type Stripe from 'stripe';
 import { createServiceClient } from '@/lib/supabase/server';
 import { getStripeClient, tierFromStripePriceId } from '@/lib/billing/stripe';
+import { syncUserSubscriptionTier } from '@/lib/billing/get-user-tier';
 import { recordWebhookEventIfNew } from '@/lib/billing/webhook-log';
 
 // Next.js App Router route handlers never auto-parse the body (unlike the
@@ -74,7 +75,7 @@ export async function POST(request: NextRequest) {
         const item = subscription.items.data[0];
         const tier = item ? tierFromStripePriceId(item.price.id) : null;
 
-        await supabase.from('subscriptions').insert({
+        const { error: insertError } = await supabase.from('subscriptions').insert({
           user_id: userId,
           payment_provider: 'stripe',
           provider_subscription_id: subscriptionId,
@@ -83,6 +84,8 @@ export async function POST(request: NextRequest) {
           status: mapStripeStatus(subscription.status),
           current_period_end: item ? toIsoString(item.current_period_end) : null,
         });
+        if (insertError) throw insertError;
+        await syncUserSubscriptionTier(supabase, userId);
         break;
       }
 
@@ -91,23 +94,35 @@ export async function POST(request: NextRequest) {
         const item = subscription.items.data[0];
         const tier = item ? tierFromStripePriceId(item.price.id) : null;
 
-        await supabase
+        const { data: updated, error } = await supabase
           .from('subscriptions')
           .update({
             status: mapStripeStatus(subscription.status),
             current_period_end: item ? toIsoString(item.current_period_end) : null,
             ...(tier ? { tier } : {}),
           })
-          .eq('provider_subscription_id', subscription.id);
+          .eq('provider_subscription_id', subscription.id)
+          .select('user_id');
+        if (error) throw error;
+
+        for (const row of updated ?? []) {
+          await syncUserSubscriptionTier(supabase, row.user_id);
+        }
         break;
       }
 
       case 'customer.subscription.deleted': {
         const subscription = event.data.object as Stripe.Subscription;
-        await supabase
+        const { data: updated, error } = await supabase
           .from('subscriptions')
           .update({ status: 'cancelled' })
-          .eq('provider_subscription_id', subscription.id);
+          .eq('provider_subscription_id', subscription.id)
+          .select('user_id');
+        if (error) throw error;
+
+        for (const row of updated ?? []) {
+          await syncUserSubscriptionTier(supabase, row.user_id);
+        }
         break;
       }
 
@@ -117,10 +132,27 @@ export async function POST(request: NextRequest) {
         const subscriptionId = typeof subscriptionRef === 'string' ? subscriptionRef : subscriptionRef?.id;
         const customerId = typeof invoice.customer === 'string' ? invoice.customer : invoice.customer?.id;
 
+        let updated = null;
         if (subscriptionId) {
-          await supabase.from('subscriptions').update({ status: 'past_due' }).eq('provider_subscription_id', subscriptionId);
+          const result = await supabase
+            .from('subscriptions')
+            .update({ status: 'past_due' })
+            .eq('provider_subscription_id', subscriptionId)
+            .select('user_id');
+          if (result.error) throw result.error;
+          updated = result.data;
         } else if (customerId) {
-          await supabase.from('subscriptions').update({ status: 'past_due' }).eq('provider_customer_id', customerId);
+          const result = await supabase
+            .from('subscriptions')
+            .update({ status: 'past_due' })
+            .eq('provider_customer_id', customerId)
+            .select('user_id');
+          if (result.error) throw result.error;
+          updated = result.data;
+        }
+
+        for (const row of updated ?? []) {
+          await syncUserSubscriptionTier(supabase, row.user_id);
         }
         break;
       }

@@ -1,6 +1,7 @@
 import { type NextRequest, NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabase/server';
 import { verifyPaystackSignature, tierFromPaystackPlanCode } from '@/lib/billing/paystack';
+import { syncUserSubscriptionTier } from '@/lib/billing/get-user-tier';
 import { recordWebhookEventIfNew } from '@/lib/billing/webhook-log';
 
 // Same as the Stripe route: App Router route handlers never auto-parse
@@ -86,7 +87,7 @@ export async function POST(request: NextRequest) {
           : { data: null };
 
         if (existing) {
-          await supabase
+          const { error } = await supabase
             .from('subscriptions')
             .update({
               status: 'active',
@@ -94,6 +95,7 @@ export async function POST(request: NextRequest) {
               ...(authorizationCode ? { paystack_authorization_code: authorizationCode } : {}),
             })
             .eq('id', existing.id);
+          if (error) throw error;
         } else {
           // upsert, not insert: the select above and this write aren't
           // atomic, so a concurrent charge.success delivery for the same
@@ -103,7 +105,7 @@ export async function POST(request: NextRequest) {
           // that a conflict instead of a duplicate row — onConflict
           // reconciles it the same way the "existing" branch above would,
           // rather than erroring out and losing this event.
-          await supabase
+          const { error } = await supabase
             .from('subscriptions')
             .upsert(
               {
@@ -118,7 +120,9 @@ export async function POST(request: NextRequest) {
               },
               { onConflict: 'payment_provider,provider_customer_id' }
             );
+          if (error) throw error;
         }
+        await syncUserSubscriptionTier(supabase, userId);
         break;
       }
 
@@ -127,14 +131,20 @@ export async function POST(request: NextRequest) {
         const subscriptionCode = payload.data.subscription_code;
         if (!customerCode || !subscriptionCode) break;
 
-        await supabase
+        const { data: updated, error } = await supabase
           .from('subscriptions')
           .update({
             provider_subscription_id: subscriptionCode,
             status: 'active',
             current_period_end: payload.data.next_payment_date ?? null,
           })
-          .eq('provider_customer_id', customerCode);
+          .eq('provider_customer_id', customerCode)
+          .select('user_id');
+        if (error) throw error;
+
+        for (const row of updated ?? []) {
+          await syncUserSubscriptionTier(supabase, row.user_id);
+        }
         break;
       }
 
@@ -142,7 +152,16 @@ export async function POST(request: NextRequest) {
         const subscriptionCode = payload.data.subscription_code;
         if (!subscriptionCode) break;
 
-        await supabase.from('subscriptions').update({ status: 'cancelled' }).eq('provider_subscription_id', subscriptionCode);
+        const { data: updated, error } = await supabase
+          .from('subscriptions')
+          .update({ status: 'cancelled' })
+          .eq('provider_subscription_id', subscriptionCode)
+          .select('user_id');
+        if (error) throw error;
+
+        for (const row of updated ?? []) {
+          await syncUserSubscriptionTier(supabase, row.user_id);
+        }
         break;
       }
 
@@ -150,10 +169,27 @@ export async function POST(request: NextRequest) {
         const subscriptionCode = payload.data.subscription?.subscription_code;
         const customerCode = payload.data.customer?.customer_code;
 
+        let updated = null;
         if (subscriptionCode) {
-          await supabase.from('subscriptions').update({ status: 'past_due' }).eq('provider_subscription_id', subscriptionCode);
+          const result = await supabase
+            .from('subscriptions')
+            .update({ status: 'past_due' })
+            .eq('provider_subscription_id', subscriptionCode)
+            .select('user_id');
+          if (result.error) throw result.error;
+          updated = result.data;
         } else if (customerCode) {
-          await supabase.from('subscriptions').update({ status: 'past_due' }).eq('provider_customer_id', customerCode);
+          const result = await supabase
+            .from('subscriptions')
+            .update({ status: 'past_due' })
+            .eq('provider_customer_id', customerCode)
+            .select('user_id');
+          if (result.error) throw result.error;
+          updated = result.data;
+        }
+
+        for (const row of updated ?? []) {
+          await syncUserSubscriptionTier(supabase, row.user_id);
         }
         break;
       }

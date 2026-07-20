@@ -13,8 +13,30 @@ import * as Sentry from '@sentry/nextjs';
  * throwing. Real error monitoring activates the moment a real DSN is
  * set, with no code change required.
  */
+/**
+ * Logs which mode (test/live/unset) each payment processor's secret key is
+ * in, derived only from the key's own prefix — never the key value itself.
+ * Exists because there's no code-level guard against a test key ending up
+ * in Production or a live key in Preview (see .env.example's payments
+ * section); this makes the actual runtime state visible in deploy logs
+ * instead of silently trusting whatever was pasted into Vercel.
+ */
+function logPaymentProcessorModes() {
+  const stripeKey = process.env.STRIPE_SECRET_KEY;
+  const stripeMode = !stripeKey ? 'UNSET' : stripeKey.startsWith('sk_live_') ? 'LIVE' : stripeKey.startsWith('sk_test_') ? 'TEST' : 'UNKNOWN_PREFIX';
+
+  const paystackKey = process.env.PAYSTACK_SECRET_KEY;
+  const paystackMode = !paystackKey ? 'UNSET' : paystackKey.startsWith('sk_live_') ? 'LIVE' : paystackKey.startsWith('sk_test_') ? 'TEST' : 'UNKNOWN_PREFIX';
+
+  console.log(
+    `[payment-processor-mode] stripe=${stripeMode} paystack=${paystackMode} vercelEnv=${process.env.VERCEL_ENV ?? 'local'}`
+  );
+}
+
 export async function register() {
   if (process.env.NEXT_RUNTIME === 'nodejs') {
+    logPaymentProcessorModes();
+
     Sentry.init({
       dsn: process.env.NEXT_PUBLIC_SENTRY_DSN,
       tracesSampleRate: 0.1,
