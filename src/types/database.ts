@@ -230,7 +230,7 @@ export type Subscription = {
 
 export type BillingWebhookEvent = {
   id: string;
-  provider: 'stripe' | 'paystack';
+  provider: 'stripe' | 'paystack' | 'flutterwave';
   event_id: string;
   event_type: string;
   // Non-sensitive metadata only — never the raw webhook payload. See

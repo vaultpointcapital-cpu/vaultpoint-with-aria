@@ -48,6 +48,11 @@ if (!PAYSTACK_SECRET_KEY?.startsWith('sk_test')) {
   console.error('PAYSTACK_SECRET_KEY is not a TEST key (must start sk_test) — refusing to run against a non-test key.');
   process.exit(1);
 }
+const FLUTTERWAVE_SECRET_KEY = process.env.FLUTTERWAVE_SECRET_KEY;
+if (FLUTTERWAVE_SECRET_KEY && !FLUTTERWAVE_SECRET_KEY.startsWith('FLWSECK_TEST')) {
+  console.error('FLUTTERWAVE_SECRET_KEY is not a TEST key (must start FLWSECK_TEST) — refusing to run against a non-test key.');
+  process.exit(1);
+}
 
 // A dummy value is fine here: Stripe's constructEvent() only checks that
 // the HMAC in the header matches this secret — it never calls Stripe's
@@ -524,6 +529,133 @@ async function testPaystackFailurePaths() {
   }
 }
 
+// ---------------------------------------------------------------------
+// Flutterwave — no HMAC, verif-hash is a static secret string compared
+// directly (see src/lib/billing/flutterwave.ts's doc comment: this is
+// NOT YET verified against a real webhook delivery, built from
+// documentation + empirical testing of the payment-plans/payments API
+// only). Every charge (first subscribe AND renewal) fires the same
+// charge.completed event — there's no separate subscription lifecycle.
+// ---------------------------------------------------------------------
+async function flutterwaveEventRequest(event) {
+  const { POST } = await import('../src/app/api/webhooks/flutterwave/route.ts');
+  const payload = JSON.stringify(event);
+  const { NextRequest } = await import('next/server');
+  const request = new NextRequest('https://vaultpoint.name.ng/api/webhooks/flutterwave', {
+    method: 'POST',
+    body: payload,
+    headers: { 'verif-hash': process.env.FLUTTERWAVE_WEBHOOK_SECRET_HASH ?? '' },
+  });
+  const response = await withShadowAsLive(() => POST(request));
+  if (!response.ok) {
+    console.error(`  [flutterwave webhook] ${event.event}/${event.data.status} -> ${response.status}:`, await response.clone().text());
+  }
+  return response;
+}
+
+async function testFlutterwaveTier(tier) {
+  console.log(`\n=== Flutterwave — ${tier} ===`);
+  const planEnvVar = tier === 'pro' ? 'FLUTTERWAVE_PLAN_PRO' : 'FLUTTERWAVE_PLAN_ELITE';
+  const planId = process.env[planEnvVar];
+  if (!planId || !process.env.FLUTTERWAVE_WEBHOOK_SECRET_HASH) {
+    report(`${planEnvVar} and FLUTTERWAVE_WEBHOOK_SECRET_HASH are set`, false, 'skipping Flutterwave ' + tier);
+    return;
+  }
+
+  const userId = await createTestUser(`billing-test-flutterwave-${tier}-${Date.now()}@example.invalid`);
+  const email = `billing-test-flutterwave-${tier}-${Date.now()}@example.invalid`;
+
+  try {
+    // --- initial subscribe: charge.completed, status successful ---
+    await flutterwaveEventRequest({
+      event: 'charge.completed',
+      data: {
+        id: Date.now(),
+        tx_ref: `vp_${userId}_${Date.now()}`,
+        status: 'successful',
+        customer: { email },
+        payment_plan: Number(planId),
+        meta: { user_id: userId },
+      },
+    });
+
+    let subRow = await getSubscriptionRow(userId);
+    report(`subscriptions row created with tier=${tier}`, subRow?.tier === tier, JSON.stringify(subRow));
+    report('subscriptions row status=active', subRow?.status === 'active');
+
+    let usersRow = await getUsersRow(userId);
+    report(`users.subscription_tier synced to ${tier}`, usersRow?.subscription_tier === tier, JSON.stringify(usersRow));
+
+    // --- renewal decline: charge.completed, status failed ---
+    await flutterwaveEventRequest({
+      event: 'charge.completed',
+      data: {
+        id: Date.now() + 1,
+        tx_ref: `vp_${userId}_${Date.now()}_renew`,
+        status: 'failed',
+        customer: { email },
+        payment_plan: Number(planId),
+        meta: { user_id: userId },
+      },
+    });
+
+    subRow = await getSubscriptionRow(userId);
+    report('renewal decline sets subscriptions.status=past_due', subRow?.status === 'past_due', JSON.stringify(subRow));
+    report('past_due_since is set on first decline', !!subRow?.past_due_since);
+
+    usersRow = await getUsersRow(userId);
+    report(`access retained during grace period (still tier=${tier})`, usersRow?.subscription_tier === tier, JSON.stringify(usersRow));
+
+    // --- backdate past_due_since beyond the grace window ---
+    await shadowAdmin
+      .from('subscriptions')
+      .update({ past_due_since: new Date(Date.now() - 4 * 24 * 60 * 60 * 1000).toISOString() })
+      .eq('user_id', userId);
+    const { syncUserSubscriptionTier } = await import('../src/lib/billing/get-user-tier.ts');
+    await syncUserSubscriptionTier(shadowAdmin, userId);
+    usersRow = await getUsersRow(userId);
+    report('access revoked once past the 3-day grace window', usersRow?.subscription_tier === 'free', JSON.stringify(usersRow));
+
+    // --- recovery: charge.completed, status successful again ---
+    await flutterwaveEventRequest({
+      event: 'charge.completed',
+      data: {
+        id: Date.now() + 2,
+        tx_ref: `vp_${userId}_${Date.now()}_recover`,
+        status: 'successful',
+        customer: { email },
+        payment_plan: Number(planId),
+        meta: { user_id: userId },
+      },
+    });
+    subRow = await getSubscriptionRow(userId);
+    report('recovery clears past_due_since', subRow?.past_due_since === null, JSON.stringify(subRow));
+    usersRow = await getUsersRow(userId);
+    report(`recovery restores tier=${tier}`, usersRow?.subscription_tier === tier, JSON.stringify(usersRow));
+
+    // --- duplicate delivery: same transaction id sent twice ---
+    const dupeEvent = {
+      event: 'charge.completed',
+      data: {
+        id: Date.now() + 3,
+        tx_ref: `vp_${userId}_dupe`,
+        status: 'successful',
+        customer: { email },
+        payment_plan: Number(planId),
+        meta: { user_id: userId },
+      },
+    };
+    const first = await flutterwaveEventRequest(dupeEvent);
+    const firstBody = await first.clone().json();
+    const second = await flutterwaveEventRequest(dupeEvent);
+    const secondBody = await second.clone().json();
+    report('first delivery of a new transaction id is NOT marked duplicate', firstBody.duplicate !== true, JSON.stringify(firstBody));
+    report('exact-duplicate transaction id redelivery is marked duplicate, not reprocessed', secondBody.duplicate === true, JSON.stringify(secondBody));
+  } finally {
+    await deleteTestUser(userId);
+  }
+}
+
 async function main() {
   console.log('Billing cycle test — TEST MODE only (Stripe sk_test_*, Paystack sk_test*)');
   console.log('Writing to SHADOW Supabase project:', SHADOW_SUPABASE_URL);
@@ -535,6 +667,8 @@ async function main() {
   await testPaystackTier('elite');
   await testStripeFailurePaths();
   await testPaystackFailurePaths();
+  await testFlutterwaveTier('pro');
+  await testFlutterwaveTier('elite');
 
   console.log(`\n${failures === 0 ? 'All billing cycle checks passed.' : `${failures} check(s) FAILED.`}`);
   process.exit(failures === 0 ? 0 : 1);

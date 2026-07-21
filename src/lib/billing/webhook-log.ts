@@ -11,7 +11,7 @@ import { createServiceClient } from '@/lib/supabase/server';
  * treats a unique-violation as "already processed", atomically.
  */
 export async function recordWebhookEventIfNew(params: {
-  provider: 'stripe' | 'paystack';
+  provider: 'stripe' | 'paystack' | 'flutterwave';
   eventId: string;
   eventType: string;
   metadata: Record<string, unknown>;

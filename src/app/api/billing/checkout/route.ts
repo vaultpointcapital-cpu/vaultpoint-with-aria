@@ -4,6 +4,7 @@ import { checkoutSchema, TIER_RANK } from '@/lib/validations/billing';
 import { resolveProvider } from '@/lib/billing/routing';
 import { getStripeClient, getStripePriceId } from '@/lib/billing/stripe';
 import { getPaystackPlanCode, initializePaystackTransaction } from '@/lib/billing/paystack';
+import { initializeFlutterwaveTransaction } from '@/lib/billing/flutterwave';
 import { apiError, apiSuccess } from '@/lib/utils/api-response';
 
 export async function POST(request: NextRequest) {
@@ -63,7 +64,17 @@ export async function POST(request: NextRequest) {
     }
 
     if (!authData.user.email) {
-      return apiError('VALIDATION_ERROR', 'An email address is required to check out with Paystack.');
+      return apiError('VALIDATION_ERROR', 'An email address is required to check out.');
+    }
+
+    if (provider === 'flutterwave') {
+      const { url } = await initializeFlutterwaveTransaction({
+        email: authData.user.email,
+        tier,
+        userId: authData.user.id,
+        redirectUrl: `${appUrl}/settings/billing?status=success`,
+      });
+      return apiSuccess({ url });
     }
 
     const { url } = await initializePaystackTransaction({

@@ -2,7 +2,7 @@ import { z } from 'zod';
 
 export const checkoutSchema = z.object({
   tier: z.enum(['pro', 'elite'], { errorMap: () => ({ message: 'tier must be "pro" or "elite"' }) }),
-  preferred_provider: z.enum(['stripe', 'paystack']).optional(),
+  preferred_provider: z.enum(['stripe', 'paystack', 'flutterwave']).optional(),
 });
 
 export type CheckoutInput = z.infer<typeof checkoutSchema>;
