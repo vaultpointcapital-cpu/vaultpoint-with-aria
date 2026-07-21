@@ -2,23 +2,32 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import { createClient } from '@/lib/supabase/server';
 import type { Database, SubscriptionTier } from '@/types/database';
 
+// A renewal decline doesn't revoke access immediately — the user keeps
+// their tier for this long after the FIRST failed charge (past_due_since),
+// not reset by later retries of the same decline episode. A cancelled row
+// gets no grace period; only a failed-payment (past_due) does.
+const PAST_DUE_GRACE_PERIOD_MS = 3 * 24 * 60 * 60 * 1000;
+
 /**
- * Computes a user's current tier from subscriptions (their most recent
- * active/trialing row), falling back to 'free' if no row exists — a user
- * who has never subscribed has no subscriptions row at all, that's
- * expected, not an error. subscriptions is the source of truth; a
- * past_due or cancelled row does not count as active access, matching
- * how a lapsed/failed payment should behave.
+ * Computes a user's current tier from subscriptions: their most recent
+ * active/trialing row, OR a past_due row still within its grace period
+ * (past_due_since within the last 3 days) — falls back to 'free' if
+ * neither exists. A user who has never subscribed has no subscriptions
+ * row at all, that's expected, not an error. A past_due row with no
+ * past_due_since (or one outside the grace window), and any cancelled
+ * row, do not count as active access.
  */
 export async function computeUserTier(
   supabase: SupabaseClient<Database>,
   userId: string
 ): Promise<SubscriptionTier> {
+  const graceCutoff = new Date(Date.now() - PAST_DUE_GRACE_PERIOD_MS).toISOString();
+
   const { data } = await supabase
     .from('subscriptions')
     .select('tier')
     .eq('user_id', userId)
-    .in('status', ['active', 'trialing'])
+    .or(`status.in.(active,trialing),and(status.eq.past_due,past_due_since.gte.${graceCutoff})`)
     .order('created_at', { ascending: false })
     .limit(1)
     .maybeSingle();

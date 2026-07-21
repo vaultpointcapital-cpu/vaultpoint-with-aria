@@ -366,13 +366,48 @@ async function testStripeFailurePaths() {
 
     let subRow = await getSubscriptionRow(userId);
     report('renewal decline sets subscriptions.status=past_due', subRow?.status === 'past_due', JSON.stringify(subRow));
+    report('past_due_since is set on first decline', !!subRow?.past_due_since, JSON.stringify(subRow));
 
     let usersRow = await getUsersRow(userId);
     report(
-      'users.subscription_tier revoked to free on past_due (no active/trialing row left)',
-      usersRow?.subscription_tier === 'free',
+      `access retained during grace period (still tier=pro)`,
+      usersRow?.subscription_tier === 'pro',
       JSON.stringify(usersRow)
     );
+
+    // --- a second decline for the SAME outage must not push the grace
+    // clock forward ---
+    const firstPastDueSince = subRow.past_due_since;
+    await stripeEventRequest({
+      id: `evt_test_invfail2_${Date.now()}`,
+      type: 'invoice.payment_failed',
+      data: { object: { parent: { subscription_details: { subscription: subscription.id } }, customer: customer.id } },
+    });
+    subRow = await getSubscriptionRow(userId);
+    report('second decline for the same outage does not reset past_due_since', subRow?.past_due_since === firstPastDueSince);
+
+    // --- backdate past_due_since beyond the grace window (directly in
+    // shadow DB, simulating time passing) and confirm access is THEN
+    // revoked ---
+    await shadowAdmin
+      .from('subscriptions')
+      .update({ past_due_since: new Date(Date.now() - 4 * 24 * 60 * 60 * 1000).toISOString() })
+      .eq('user_id', userId);
+    const { syncUserSubscriptionTier } = await import('../src/lib/billing/get-user-tier.ts');
+    await syncUserSubscriptionTier(shadowAdmin, userId);
+    usersRow = await getUsersRow(userId);
+    report('access revoked once past the 3-day grace window', usersRow?.subscription_tier === 'free', JSON.stringify(usersRow));
+
+    // --- recovery: a successful renewal clears past_due_since ---
+    await stripeEventRequest({
+      id: `evt_test_recover_${Date.now()}`,
+      type: 'customer.subscription.updated',
+      data: { object: { ...subscription, status: 'active' } },
+    });
+    subRow = await getSubscriptionRow(userId);
+    report('recovery (active again) clears past_due_since', subRow?.past_due_since === null, JSON.stringify(subRow));
+    usersRow = await getUsersRow(userId);
+    report(`recovery restores tier=pro`, usersRow?.subscription_tier === 'pro', JSON.stringify(usersRow));
 
     // --- duplicate webhook delivery: same event id sent twice ---
     const dupeEvent = { id: `evt_test_dupe_${Date.now()}`, type: 'customer.subscription.updated', data: { object: subscription } };
@@ -440,13 +475,36 @@ async function testPaystackFailurePaths() {
 
     let subRow = await getSubscriptionRow(userId);
     report('renewal decline sets subscriptions.status=past_due', subRow?.status === 'past_due', JSON.stringify(subRow));
+    report('past_due_since is set on first decline', !!subRow?.past_due_since, JSON.stringify(subRow));
 
     let usersRow = await getUsersRow(userId);
-    report(
-      'users.subscription_tier revoked to free on past_due (no active/trialing row left)',
-      usersRow?.subscription_tier === 'free',
-      JSON.stringify(usersRow)
-    );
+    report('access retained during grace period (still tier=pro)', usersRow?.subscription_tier === 'pro', JSON.stringify(usersRow));
+
+    // --- backdate past_due_since beyond the grace window and confirm
+    // access is THEN revoked ---
+    await shadowAdmin
+      .from('subscriptions')
+      .update({ past_due_since: new Date(Date.now() - 4 * 24 * 60 * 60 * 1000).toISOString() })
+      .eq('user_id', userId);
+    const { syncUserSubscriptionTier } = await import('../src/lib/billing/get-user-tier.ts');
+    await syncUserSubscriptionTier(shadowAdmin, userId);
+    usersRow = await getUsersRow(userId);
+    report('access revoked once past the 3-day grace window', usersRow?.subscription_tier === 'free', JSON.stringify(usersRow));
+
+    // --- recovery: a successful renewal charge clears past_due_since ---
+    await paystackEventRequest({
+      event: 'charge.success',
+      data: {
+        id: Date.now(),
+        customer: { customer_code: customerCode },
+        plan: { plan_code: planCode },
+        metadata: { user_id: userId },
+      },
+    });
+    subRow = await getSubscriptionRow(userId);
+    report('recovery (renewal success) clears past_due_since', subRow?.past_due_since === null, JSON.stringify(subRow));
+    usersRow = await getUsersRow(userId);
+    report('recovery restores tier=pro', usersRow?.subscription_tier === 'pro', JSON.stringify(usersRow));
 
     // --- duplicate webhook delivery: Paystack has no event id, the raw-body
     // HMAC signature IS the idempotency key, so resending the exact same

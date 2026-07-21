@@ -91,6 +91,9 @@ export async function POST(request: NextRequest) {
             .from('subscriptions')
             .update({
               status: 'active',
+              // A successful charge is recovery — clears any grace-period
+              // clock left over from a prior renewal decline.
+              past_due_since: null,
               ...(tier ? { tier } : {}),
               ...(authorizationCode ? { paystack_authorization_code: authorizationCode } : {}),
             })
@@ -117,6 +120,7 @@ export async function POST(request: NextRequest) {
                 tier: tier ?? 'pro',
                 status: 'active',
                 current_period_end: null,
+                past_due_since: null,
               },
               { onConflict: 'payment_provider,provider_customer_id' }
             );
@@ -169,26 +173,25 @@ export async function POST(request: NextRequest) {
         const subscriptionCode = payload.data.subscription?.subscription_code;
         const customerCode = payload.data.customer?.customer_code;
 
-        let updated = null;
-        if (subscriptionCode) {
-          const result = await supabase
-            .from('subscriptions')
-            .update({ status: 'past_due' })
-            .eq('provider_subscription_id', subscriptionCode)
-            .select('user_id');
-          if (result.error) throw result.error;
-          updated = result.data;
-        } else if (customerCode) {
-          const result = await supabase
-            .from('subscriptions')
-            .update({ status: 'past_due' })
-            .eq('provider_customer_id', customerCode)
-            .select('user_id');
-          if (result.error) throw result.error;
-          updated = result.data;
-        }
+        // Select first (not a blind update) so past_due_since is only set
+        // the FIRST time a row enters past_due — a retried/second decline
+        // for the same outage must not push the grace-period clock forward.
+        const selectResult = subscriptionCode
+          ? await supabase.from('subscriptions').select('id, user_id, status').eq('provider_subscription_id', subscriptionCode)
+          : customerCode
+            ? await supabase.from('subscriptions').select('id, user_id, status').eq('provider_customer_id', customerCode)
+            : { data: [], error: null };
+        if (selectResult.error) throw selectResult.error;
 
-        for (const row of updated ?? []) {
+        for (const row of selectResult.data ?? []) {
+          const { error } = await supabase
+            .from('subscriptions')
+            .update({
+              status: 'past_due',
+              ...(row.status !== 'past_due' ? { past_due_since: new Date().toISOString() } : {}),
+            })
+            .eq('id', row.id);
+          if (error) throw error;
           await syncUserSubscriptionTier(supabase, row.user_id);
         }
         break;

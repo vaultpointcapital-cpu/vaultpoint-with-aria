@@ -220,6 +220,10 @@ export type Subscription = {
   tier: SubscriptionTier;
   status: SubscriptionStatus;
   current_period_end: string | null;
+  // When this row first entered 'past_due' (set once per decline episode,
+  // cleared to null on recovery to active/trialing). Grants a grace
+  // period before access is revoked — see get-user-tier.ts.
+  past_due_since: string | null;
   created_at: string;
   updated_at: string;
 };

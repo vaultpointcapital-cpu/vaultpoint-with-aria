@@ -83,6 +83,7 @@ export async function POST(request: NextRequest) {
           tier: tier ?? 'pro',
           status: mapStripeStatus(subscription.status),
           current_period_end: item ? toIsoString(item.current_period_end) : null,
+          past_due_since: null,
         });
         if (insertError) throw insertError;
         await syncUserSubscriptionTier(supabase, userId);
@@ -93,13 +94,20 @@ export async function POST(request: NextRequest) {
         const subscription = event.data.object as Stripe.Subscription;
         const item = subscription.items.data[0];
         const tier = item ? tierFromStripePriceId(item.price.id) : null;
+        const newStatus = mapStripeStatus(subscription.status);
 
         const { data: updated, error } = await supabase
           .from('subscriptions')
           .update({
-            status: mapStripeStatus(subscription.status),
+            status: newStatus,
             current_period_end: item ? toIsoString(item.current_period_end) : null,
             ...(tier ? { tier } : {}),
+            // Recovery (back to active/trialing) clears the grace-period
+            // clock. Entering/staying past_due via this event is left
+            // alone here — invoice.payment_failed is the authoritative
+            // signal for starting the clock, so it isn't reset by every
+            // unrelated customer.subscription.updated delivery.
+            ...(newStatus === 'active' || newStatus === 'trialing' ? { past_due_since: null } : {}),
           })
           .eq('provider_subscription_id', subscription.id)
           .select('user_id');
@@ -132,26 +140,25 @@ export async function POST(request: NextRequest) {
         const subscriptionId = typeof subscriptionRef === 'string' ? subscriptionRef : subscriptionRef?.id;
         const customerId = typeof invoice.customer === 'string' ? invoice.customer : invoice.customer?.id;
 
-        let updated = null;
-        if (subscriptionId) {
-          const result = await supabase
-            .from('subscriptions')
-            .update({ status: 'past_due' })
-            .eq('provider_subscription_id', subscriptionId)
-            .select('user_id');
-          if (result.error) throw result.error;
-          updated = result.data;
-        } else if (customerId) {
-          const result = await supabase
-            .from('subscriptions')
-            .update({ status: 'past_due' })
-            .eq('provider_customer_id', customerId)
-            .select('user_id');
-          if (result.error) throw result.error;
-          updated = result.data;
-        }
+        // Select first (not a blind update) so past_due_since is only set
+        // the FIRST time a row enters past_due — a retried/second decline
+        // for the same outage must not push the grace-period clock forward.
+        const selectResult = subscriptionId
+          ? await supabase.from('subscriptions').select('id, user_id, status').eq('provider_subscription_id', subscriptionId)
+          : customerId
+            ? await supabase.from('subscriptions').select('id, user_id, status').eq('provider_customer_id', customerId)
+            : { data: [], error: null };
+        if (selectResult.error) throw selectResult.error;
 
-        for (const row of updated ?? []) {
+        for (const row of selectResult.data ?? []) {
+          const { error } = await supabase
+            .from('subscriptions')
+            .update({
+              status: 'past_due',
+              ...(row.status !== 'past_due' ? { past_due_since: new Date().toISOString() } : {}),
+            })
+            .eq('id', row.id);
+          if (error) throw error;
           await syncUserSubscriptionTier(supabase, row.user_id);
         }
         break;
