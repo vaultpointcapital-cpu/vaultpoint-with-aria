@@ -10,6 +10,7 @@ const SUB_PROCESSORS = [
   { name: 'Upstash', purpose: 'Rate limiting and caching (Redis)' },
   { name: 'Paystack', purpose: 'Payment processing (NGN)' },
   { name: 'Stripe', purpose: 'Payment processing (USD)' },
+  { name: 'Flutterwave', purpose: 'Payment processing (other African markets)' },
   { name: 'Resend', purpose: 'Transactional email delivery' },
   { name: 'Sentry', purpose: 'Error monitoring' },
   { name: 'Anthropic', purpose: "Aria's AI model (Claude)" },
@@ -30,7 +31,7 @@ export default function PrivacyPage() {
           <li>
             For Managed Accounts only: identity verification (KYC) documents and a signed trading authorization.
           </li>
-          <li>Payment data: handled entirely by Stripe/Paystack — VaultPoint never stores card numbers.</li>
+          <li>Payment data: handled entirely by Stripe/Paystack/Flutterwave — VaultPoint never stores card numbers.</li>
         </ul>
       </section>
 
