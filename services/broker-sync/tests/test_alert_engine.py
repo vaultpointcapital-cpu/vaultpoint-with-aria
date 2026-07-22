@@ -211,3 +211,51 @@ class TestNoDirectBrokerCalls:
         queried_tables = {c.table_name for c in fake_supabase.calls}
         allowed_tables = {"alerts", "positions", "manual_assets", "portfolio_snapshots", "users", "alert_history"}
         assert queried_tables <= allowed_tables
+
+    async def test_multiple_simultaneous_alerts_all_fire_none_dropped(self, fake_supabase):
+        """Day 6 launch-sprint item: 'test multiple simultaneous alerts
+        firing at once — confirm none get dropped or duplicated.' Three
+        alerts that all satisfy their condition in the same
+        evaluate_all_alerts() cycle — asserts all three actually reach
+        alert_history (none silently dropped) and each exactly once (no
+        duplicate firing within a single cycle)."""
+        fake_supabase.select_responses[("alerts", "*")] = [
+            make_alert(id="alert-price", condition_type="price", symbol="BTCUSDT", operator="above", threshold=64000),
+            make_alert(id="alert-pnl-pct", condition_type="pnl_pct", operator="above", threshold=5),
+            make_alert(id="alert-margin", condition_type="margin_pct", operator="above", threshold=1),
+        ]
+        fake_supabase.select_responses[("positions", "*")] = [BTC_POSITION]
+        fake_supabase.select_responses[("users", "email")] = [{"email": "user@example.com"}]
+        fake_supabase.select_responses[("manual_assets", "value")] = []
+
+        await alert_engine.evaluate_all_alerts()
+
+        history_inserts = fake_supabase.calls_for("alert_history", "insert")
+        fired_alert_ids = [c.values["alert_id"] for c in history_inserts]
+        assert sorted(fired_alert_ids) == ["alert-margin", "alert-pnl-pct", "alert-price"]
+        # Each id appears exactly once — not duplicated within this cycle.
+        assert len(fired_alert_ids) == len(set(fired_alert_ids))
+
+    async def test_one_alert_failing_does_not_block_the_others_in_the_same_cycle(self, fake_supabase):
+        """A single malformed/erroring alert must not take the rest of
+        the batch down with it — evaluate_all_alerts catches per-alert,
+        per its own module docstring/loop. Alert 'alert-bad' is missing
+        'operator', which raises inside _condition_met; the two well-formed
+        alerts on either side of it in the list must still fire."""
+        bad_alert = make_alert(id="alert-bad", condition_type="pnl_pct", threshold=5)
+        del bad_alert["operator"]  # _condition_met(alert["operator"], ...) raises KeyError
+
+        fake_supabase.select_responses[("alerts", "*")] = [
+            make_alert(id="alert-before", condition_type="pnl_pct", operator="above", threshold=5),
+            bad_alert,
+            make_alert(id="alert-after", condition_type="margin_pct", operator="above", threshold=1),
+        ]
+        fake_supabase.select_responses[("positions", "*")] = [BTC_POSITION]
+        fake_supabase.select_responses[("users", "email")] = [{"email": "user@example.com"}]
+        fake_supabase.select_responses[("manual_assets", "value")] = []
+
+        await alert_engine.evaluate_all_alerts()
+
+        history_inserts = fake_supabase.calls_for("alert_history", "insert")
+        fired_alert_ids = {c.values["alert_id"] for c in history_inserts}
+        assert fired_alert_ids == {"alert-before", "alert-after"}

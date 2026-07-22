@@ -3,11 +3,13 @@ in-app (aria_conversations). Browser push and Telegram are explicitly out
 of scope for this pass — see the Alert Engine spec's "what not to do".
 
 in-app delivery targets public.aria_conversations, defined in
-supabase/migrations/20260717000004_add_aria_conversations.sql — that
-migration has not been applied to any database yet (local, shadow, or
-live), so this function is correct against the schema but untested
-against a real one. It's written defensively (never raises past itself)
-so a missing table doesn't take down alert evaluation once it lands.
+supabase/migrations/20260717000004_add_aria_conversations.sql. That
+migration is now applied on live and shadow (confirmed against live's
+actual column set during the Day 6 alert-engine audit — matches this
+function's insert exactly: user_id, channel, role, content,
+message_type). Still written defensively (never raises past itself) so
+a schema drift or table issue doesn't take down alert evaluation for
+other alerts/users in the same cycle.
 """
 
 import logging
