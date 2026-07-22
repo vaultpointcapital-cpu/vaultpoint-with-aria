@@ -45,22 +45,39 @@ export function AddBrokerClient() {
     setServerError(null);
     setIsSubmitting(true);
 
-    const res = await fetch('/api/brokers', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(data),
-    });
+    try {
+      const res = await fetch('/api/brokers', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+      });
 
-    setIsSubmitting(false);
+      if (!res.ok) {
+        const body = await res.json().catch(() => null);
+        setServerError(body?.error ?? 'Could not save this broker connection. Please try again.');
+        return;
+      }
 
-    if (!res.ok) {
-      const body = await res.json().catch(() => null);
-      setServerError(body?.error ?? 'Could not save this broker connection. Please try again.');
-      return;
+      router.push('/dashboard/brokers');
+      router.refresh();
+    } catch {
+      // A thrown fetch (network failure, etc.) previously left isSubmitting
+      // stuck true forever with no feedback — same silent-failure shape as
+      // an unhandled validation rejection. Never let this fail silently.
+      setServerError('Could not reach the server. Check your connection and try again.');
+    } finally {
+      setIsSubmitting(false);
     }
+  }
 
-    router.push('/dashboard/brokers');
-    router.refresh();
+  function onInvalid(invalidFields: typeof errors) {
+    // Client-side validation failing must never be silent — previously
+    // there was no onInvalid handler at all, so a rejected/failed
+    // validation left the user staring at an unresponsive form with zero
+    // feedback (found during a real "the page isn't going through" report
+    // testing the MetaTrader path).
+    console.error('Broker form validation failed:', invalidFields);
+    setServerError('Please check the highlighted fields and try again.');
   }
 
   return (
@@ -81,7 +98,7 @@ export function AddBrokerClient() {
         </p>
       </div>
 
-      <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
+      <form onSubmit={handleSubmit(onSubmit, onInvalid)} className="space-y-4">
         {serverError && (
           <div role="alert" className="rounded-lg border border-warning/30 bg-warning/10 px-4 py-3 text-sm text-warning">
             {serverError}
