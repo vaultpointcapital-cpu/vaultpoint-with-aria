@@ -13,7 +13,15 @@
 // src/lib/billing/get-user-tier.ts (syncUserSubscriptionTier), wired into
 // both webhook handlers. This script is the regression test for that fix.
 //
-// Usage: node --env-file=.env.local scripts/test-billing-cycle.mjs
+// Usage: npx tsx scripts/test-billing-cycle.mjs
+// Must run via tsx, not plain node: this script imports route.ts directly,
+// which itself imports from 'next/server' with no file extension. Next.js's
+// own bundler resolves that fine, but plain Node's ESM loader does not
+// auto-complete extensions for bare subpath specifiers (next/server has no
+// package.json "exports" entry to resolve it either) and fails with
+// ERR_MODULE_NOT_FOUND. tsx's resolver is more permissive and handles it.
+// .env.local is parsed manually (see the readFileSync loop below) — no
+// --env-file flag or dotenv package needed.
 // Requires SHADOW_DB_URL, SHADOW_SUPABASE_URL, SHADOW_SUPABASE_SERVICE_ROLE_KEY
 // (shadow project's own Admin API credentials — same safety property as
 // scripts/test-rls-isolation.mjs: this script only ever reads the

@@ -13,7 +13,18 @@ export const createPodSchema = z.object({
     .string()
     .regex(/^#[0-9A-Fa-f]{6}$/, 'Color must be a valid hex code')
     .default('#6C63FF'),
-  deadline: z.string().date().optional().nullable(),
+  // A native <input type="date"> left untouched submits '' (not
+  // undefined) — without this preprocess, z.string().date() rejects that
+  // empty string, incorrectly blocking submission of a genuinely-optional
+  // field. Pre-existing bug, surfaced by the new wizard's per-step
+  // validation calling trigger(['deadline']) in isolation.
+  deadline: z.preprocess(
+    (val) => (val === '' ? undefined : val),
+    z.string().date().optional().nullable()
+  ),
+  // Informational reminder only — never wired to an actual scheduled
+  // transfer. See supabase/migrations/20260723000000_add_pod_funding_reminder.sql.
+  fundingReminder: z.enum(['weekly', 'biweekly', 'monthly']).optional().nullable(),
 });
 
 export type CreatePodInput = z.infer<typeof createPodSchema>;

@@ -1,11 +1,26 @@
 'use client';
 
 import { useState } from 'react';
-import { Trash2 } from 'lucide-react';
+import { Trash2, TrendingUp, TrendingDown, ShieldAlert, Tag } from 'lucide-react';
 import { Card } from '@/components/ui/card';
 import { cn } from '@/lib/utils/cn';
 import { describeAlert } from '@/lib/validations/alerts';
+import {
+  categorizeAlert,
+  ALERT_CATEGORY_BORDER,
+  ALERT_CATEGORY_ICON_BG,
+  ALERT_CATEGORY_TEXT,
+  ALERT_CATEGORY_LABEL,
+  type AlertVisualCategory,
+} from '@/lib/utils/alert-style';
 import type { Alert } from '@/types/database';
+
+const CATEGORY_ICON: Record<AlertVisualCategory, typeof Tag> = {
+  data: Tag,
+  profit: TrendingUp,
+  loss: TrendingDown,
+  risk: ShieldAlert,
+};
 
 interface AlertCardProps {
   alert: Alert;
@@ -31,13 +46,46 @@ export function AlertCard({ alert, onToggle, onDelete }: AlertCardProps) {
     // removed from the parent's list.
   }
 
+  const category = categorizeAlert(alert.condition_type, alert.operator);
+  const CategoryIcon = CATEGORY_ICON[category];
+
   return (
-    <Card className="flex items-center justify-between gap-4">
-      <div className="min-w-0">
-        <p className={cn('truncate text-sm font-medium', alert.is_active ? 'text-text-primary' : 'text-text-tertiary')}>
-          {describeAlert(alert)}
-        </p>
-        {!alert.is_active && <p className="mt-0.5 text-xs text-text-tertiary">Disabled</p>}
+    <Card
+      className={cn(
+        'flex items-center justify-between gap-4 border-l-4 py-4',
+        ALERT_CATEGORY_BORDER[category]
+      )}
+    >
+      <div className="flex min-w-0 items-center gap-3">
+        <div
+          className={cn(
+            'flex h-9 w-9 shrink-0 items-center justify-center rounded-full',
+            ALERT_CATEGORY_ICON_BG[category]
+          )}
+          aria-hidden
+        >
+          <CategoryIcon className="h-4 w-4" />
+        </div>
+
+        <div className="min-w-0">
+          <span
+            className={cn(
+              'text-[10px] font-semibold uppercase tracking-wide',
+              ALERT_CATEGORY_TEXT[category]
+            )}
+          >
+            {ALERT_CATEGORY_LABEL[category]}
+          </span>
+          <p
+            className={cn(
+              'truncate text-sm font-medium',
+              alert.is_active ? 'text-text-primary' : 'text-text-tertiary'
+            )}
+          >
+            {describeAlert(alert)}
+          </p>
+          {!alert.is_active && <p className="mt-0.5 text-xs text-text-tertiary">Disabled</p>}
+        </div>
       </div>
 
       <div className="flex shrink-0 items-center gap-3">

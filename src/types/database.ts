@@ -162,6 +162,9 @@ export type SavingsPod = {
   currency: string;
   color: string;
   deadline: string | null;
+  // Informational reminder cadence only — no automated transfer is ever
+  // scheduled from this value. See the migration comment on this column.
+  funding_reminder: 'weekly' | 'biweekly' | 'monthly' | null;
   status: PodStatus;
   created_at: string;
   updated_at: string;

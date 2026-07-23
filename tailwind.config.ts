@@ -18,6 +18,7 @@ const config: Config = {
         warning: '#FF6B35',
         info: '#3B9EFF',
         gold: '#FFD700',
+        rose: '#EC4899',
         text: {
           primary: '#F0F2F8',
           secondary: '#8B92A5',
