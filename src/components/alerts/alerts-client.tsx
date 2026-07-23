@@ -7,6 +7,7 @@ import { AlertCard } from '@/components/alerts/alert-card';
 import { AlertHistoryList } from '@/components/alerts/alert-history-list';
 import { CreateAlertDialog } from '@/components/alerts/create-alert-dialog';
 import { canCreateAnotherAlert } from '@/lib/validations/alerts';
+import { trackEvent } from '@/lib/analytics/track';
 import type { Alert, AlertHistoryEntry, SubscriptionTier } from '@/types/database';
 
 interface AlertsClientProps {
@@ -26,6 +27,17 @@ export function AlertsClient({ initialAlerts, initialHistory, subscriptionTier }
 
   function handleCreated(alert: Alert) {
     setAlerts((prev) => [alert, ...prev]);
+    trackEvent('alert_created', { conditionType: alert.condition_type, operator: alert.operator });
+  }
+
+  // "alert trigger -> action rate" (Month 1 usage-analytics item) is
+  // computed by joining alert_history (every trigger, written server-side
+  // by the alert engine) against these usage_events by alert_id/time —
+  // hasFired here just tags whether this particular toggle/delete came
+  // after the alert had ever actually fired, so that join doesn't have to
+  // guess.
+  function hasFired(alertId: string): boolean {
+    return history.some((h) => h.alert_id === alertId);
   }
 
   async function handleToggle(alertId: string, isActive: boolean) {
@@ -44,12 +56,14 @@ export function AlertsClient({ initialAlerts, initialHistory, subscriptionTier }
 
     const { alert } = await res.json();
     setAlerts((prev) => prev.map((a) => (a.id === alertId ? alert : a)));
+    trackEvent('alert_toggled', { alertId, isActive, afterTrigger: hasFired(alertId) });
   }
 
   async function handleDelete(alertId: string) {
     const res = await fetch(`/api/alerts/${alertId}`, { method: 'DELETE' });
     if (!res.ok) return;
     setAlerts((prev) => prev.filter((a) => a.id !== alertId));
+    trackEvent('alert_deleted', { alertId, afterTrigger: hasFired(alertId) });
   }
 
   if (alerts.length === 0) {

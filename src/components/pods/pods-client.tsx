@@ -7,6 +7,7 @@ import { CreatePodDialog } from '@/components/pods/create-pod-dialog';
 import { PodDetailDialog } from '@/components/pods/pod-detail-dialog';
 import { EmptyPodsIllustration } from '@/components/pods/empty-pods-illustration';
 import { canCreateAnotherPod } from '@/lib/validations/pods';
+import { trackEvent } from '@/lib/analytics/track';
 import type { SavingsPod, SubscriptionTier } from '@/types/database';
 
 interface PodsClientProps {
@@ -24,6 +25,12 @@ export function PodsClient({ initialPods, subscriptionTier }: PodsClientProps) {
 
   function handleCreated(pod: SavingsPod) {
     setPods((prev) => [pod, ...prev]);
+    trackEvent('pod_created', {
+      tier: subscriptionTier,
+      hasDeadline: pod.deadline !== null,
+      fundingReminder: pod.funding_reminder,
+      isFirstPod: pods.length === 0,
+    });
   }
 
   function handleContributed(podId: string, newCurrentAmount: number) {

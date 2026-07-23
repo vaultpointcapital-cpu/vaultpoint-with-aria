@@ -204,6 +204,14 @@ export type AlertHistoryEntry = {
   created_at: string;
 };
 
+export type UsageEvent = {
+  id: string;
+  user_id: string;
+  event_name: string;
+  properties: Record<string, unknown>;
+  created_at: string;
+};
+
 export type Subscription = {
   id: string;
   user_id: string;
@@ -578,6 +586,12 @@ export interface Database {
       alert_history: {
         Row: AlertHistoryEntry;
         Insert: Omit<AlertHistoryEntry, 'id' | 'created_at'>;
+        Update: never; // append-only
+        Relationships: [];
+      };
+      usage_events: {
+        Row: UsageEvent;
+        Insert: Omit<UsageEvent, 'id' | 'created_at' | 'properties'> & { properties?: Record<string, unknown> };
         Update: never; // append-only
         Relationships: [];
       };
