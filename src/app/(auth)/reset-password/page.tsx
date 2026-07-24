@@ -49,7 +49,7 @@ export default function ResetPasswordRequestPage() {
           <p className="mt-2 text-sm text-text-secondary">
             If an account exists for that email, we&apos;ve sent a link to reset your password.
           </p>
-          <Link href="/login" className="mt-4 inline-block text-sm text-accent hover:underline">
+          <Link href="/login" className="mt-4 inline-block text-sm text-accent-light hover:underline">
             Back to login
           </Link>
         </div>
@@ -84,7 +84,7 @@ export default function ResetPasswordRequestPage() {
         </form>
 
         <p className="mt-6 text-center text-sm text-text-secondary">
-          <Link href="/login" className="font-medium text-accent hover:underline">
+          <Link href="/login" className="font-medium text-accent-light hover:underline">
             Back to login
           </Link>
         </p>

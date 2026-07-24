@@ -133,7 +133,7 @@ function ChatBubble({ message }: { message: ChatMessage }) {
       <span
         className={cn(
           'mb-1 text-[10px] font-semibold uppercase tracking-wide',
-          isUser ? 'text-success' : 'text-accent'
+          isUser ? 'text-success' : 'text-accent-light'
         )}
       >
         {isUser ? 'You' : 'Aria'}
@@ -154,7 +154,7 @@ function ChatBubble({ message }: { message: ChatMessage }) {
               href={source.url}
               target="_blank"
               rel="noopener noreferrer"
-              className="block truncate text-[11px] text-text-tertiary hover:text-accent hover:underline"
+              className="block truncate text-[11px] text-text-tertiary hover:text-accent-light hover:underline"
             >
               {source.title}
             </a>
@@ -168,7 +168,7 @@ function ChatBubble({ message }: { message: ChatMessage }) {
 function ThinkingBubble() {
   return (
     <div className="flex flex-col items-start">
-      <span className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-accent">
+      <span className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-accent-light">
         Aria
       </span>
       <div className="flex items-center gap-1.5 rounded-lg bg-accent/10 px-3 py-2.5" aria-live="polite">

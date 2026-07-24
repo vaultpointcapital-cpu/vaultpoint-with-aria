@@ -114,7 +114,7 @@ export function AlertCard({ alert, onToggle, onDelete }: AlertCardProps) {
           onClick={handleDelete}
           disabled={isDeleting}
           aria-label="Delete alert"
-          className="rounded-md p-1.5 text-text-tertiary transition-colors hover:bg-warning/10 hover:text-warning disabled:opacity-50"
+          className="flex h-10 w-10 items-center justify-center rounded-md text-text-tertiary transition-colors hover:bg-warning/10 hover:text-warning disabled:opacity-50"
         >
           <Trash2 className="h-4 w-4" />
         </button>

@@ -80,7 +80,7 @@ export default function LoginPage() {
           <div className="space-y-2">
             <div className="flex items-center justify-between">
               <Label htmlFor="password">Password</Label>
-              <Link href="/reset-password" className="text-xs text-accent hover:underline">
+              <Link href="/reset-password" className="text-xs text-accent-light hover:underline">
                 Forgot password?
               </Link>
             </div>
@@ -102,7 +102,7 @@ export default function LoginPage() {
 
         <p className="mt-6 text-center text-sm text-text-secondary">
           Don&apos;t have an account?{' '}
-          <Link href="/signup" className="font-medium text-accent hover:underline">
+          <Link href="/signup" className="font-medium text-accent-light hover:underline">
             Sign up
           </Link>
         </p>

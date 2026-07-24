@@ -14,7 +14,7 @@ export default function VerifyEmailPage() {
           We&apos;ve sent a confirmation link to your email address. Click it to activate your
           account, then come back here to log in.
         </p>
-        <Link href="/login" className="mt-4 inline-block text-sm text-accent hover:underline">
+        <Link href="/login" className="mt-4 inline-block text-sm text-accent-light hover:underline">
           Back to login
         </Link>
       </div>

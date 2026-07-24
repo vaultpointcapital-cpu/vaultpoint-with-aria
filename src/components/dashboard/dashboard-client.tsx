@@ -162,7 +162,7 @@ export function DashboardClient({
       <Card>
         <CardHeader className="flex-row items-center justify-between">
           <CardTitle>Savings Pods</CardTitle>
-          <Link href="/dashboard/pods" className="text-xs font-medium text-accent hover:underline">
+          <Link href="/dashboard/pods" className="text-xs font-medium text-accent-light hover:underline">
             Manage →
           </Link>
         </CardHeader>

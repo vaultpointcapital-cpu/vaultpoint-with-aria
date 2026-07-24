@@ -149,7 +149,7 @@ export function ProfitShareDashboard({ currentPeriod, history }: ProfitShareDash
                 <Link
                   key={charge.id}
                   href={`/dashboard/billing/profit-share/${charge.id}`}
-                  className="flex items-center justify-between border-b border-border py-2 text-sm last:border-0 hover:text-accent"
+                  className="flex items-center justify-between border-b border-border py-2 text-sm last:border-0 hover:text-accent-light"
                 >
                   <div>
                     <span className="font-medium text-text-primary">

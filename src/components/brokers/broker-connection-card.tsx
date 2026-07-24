@@ -118,7 +118,7 @@ export function BrokerConnectionCard({
           <button
             type="button"
             onClick={() => onAuthorizeExecutionClick(connection)}
-            className="mt-1.5 text-xs font-medium text-accent hover:underline"
+            className="mt-1.5 text-xs font-medium text-accent-light hover:underline"
           >
             Authorize for trade execution
           </button>
@@ -149,7 +149,7 @@ export function BrokerConnectionCard({
               <button
                 type="button"
                 onClick={() => onManagedModeClick(connection)}
-                className="text-xs font-medium text-accent hover:underline"
+                className="text-xs font-medium text-accent-light hover:underline"
               >
                 Enable Managed Mode
               </button>
@@ -163,7 +163,7 @@ export function BrokerConnectionCard({
         onClick={handleDisconnect}
         disabled={isDisconnecting}
         aria-label={`Disconnect ${connection.label}`}
-        className="shrink-0 rounded-md p-1.5 text-text-tertiary transition-colors hover:bg-warning/10 hover:text-warning disabled:opacity-50"
+        className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md text-text-tertiary transition-colors hover:bg-warning/10 hover:text-warning disabled:opacity-50"
       >
         <Trash2 className="h-4 w-4" />
       </button>

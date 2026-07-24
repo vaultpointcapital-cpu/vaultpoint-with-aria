@@ -98,7 +98,7 @@ export function SettingsClient({
           <div className="mt-3 border-t border-border pt-3">
             <Link
               href="/dashboard/billing/profit-share"
-              className="text-xs font-medium text-accent hover:underline"
+              className="text-xs font-medium text-accent-light hover:underline"
             >
               View profit-share statements →
             </Link>
@@ -110,7 +110,7 @@ export function SettingsClient({
       <Card>
         <CardHeader className="flex-row items-center justify-between">
           <CardTitle>Connected Brokers</CardTitle>
-          <Link href="/dashboard/brokers" className="text-xs font-medium text-accent hover:underline">
+          <Link href="/dashboard/brokers" className="text-xs font-medium text-accent-light hover:underline">
             Manage →
           </Link>
         </CardHeader>

@@ -193,7 +193,7 @@ export function CreatePodDialog({ open, onOpenChange, onCreated }: CreatePodDial
                               type="button"
                               onClick={() => setValue('color', hex, { shouldValidate: true })}
                               className={cn(
-                                'h-8 w-8 rounded-full transition-transform',
+                                'h-10 w-10 rounded-full transition-transform',
                                 selectedColor === hex && 'ring-2 ring-accent ring-offset-2 ring-offset-surface'
                               )}
                               style={{ backgroundColor: hex }}
@@ -262,7 +262,7 @@ export function CreatePodDialog({ open, onOpenChange, onCreated }: CreatePodDial
                             className={cn(
                               'rounded-lg border px-3 py-2 text-sm font-medium transition-colors',
                               selectedFundingReminder === opt.value
-                                ? 'border-accent bg-accent/10 text-accent'
+                                ? 'border-accent bg-accent/10 text-accent-light'
                                 : 'border-border text-text-secondary hover:border-accent/40'
                             )}
                           >

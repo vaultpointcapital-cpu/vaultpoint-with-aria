@@ -124,7 +124,7 @@ export function ComplianceDashboard({ rows }: ComplianceDashboardProps) {
                     </span>
                     <a
                       href={`/api/admin/managed-accounts/${account.id}/audit-export`}
-                      className="text-xs text-accent hover:underline"
+                      className="text-xs text-accent-light hover:underline"
                     >
                       Export audit CSV
                     </a>
@@ -168,7 +168,7 @@ export function ComplianceDashboard({ rows }: ComplianceDashboardProps) {
                   </span>
                   <a
                     href={`/api/admin/managed-accounts/${account.id}/audit-export`}
-                    className="text-xs text-accent hover:underline"
+                    className="text-xs text-accent-light hover:underline"
                   >
                     Export audit CSV
                   </a>

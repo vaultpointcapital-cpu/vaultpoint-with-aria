@@ -223,7 +223,7 @@ export function ManagedAccountDashboard({
                 <Link
                   key={distribution.id}
                   href={`/dashboard/managed-accounts/${account.id}/distributions/${distribution.id}`}
-                  className="flex items-center justify-between border-b border-border py-2 text-sm last:border-0 hover:text-accent"
+                  className="flex items-center justify-between border-b border-border py-2 text-sm last:border-0 hover:text-accent-light"
                 >
                   <div>
                     <span className="font-medium text-text-primary">
@@ -244,7 +244,7 @@ export function ManagedAccountDashboard({
         <p className="text-xs text-text-tertiary">
           Signed authorization (v{authorization.document_version}) on{' '}
           {new Date(authorization.signed_at).toLocaleDateString()} —{' '}
-          <a href={authorization.document_url} target="_blank" rel="noreferrer" className="text-accent hover:underline">
+          <a href={authorization.document_url} target="_blank" rel="noreferrer" className="text-accent-light hover:underline">
             view document
           </a>
         </p>

@@ -130,15 +130,15 @@ export default function SignupPage() {
 
           <p className="text-center text-xs text-text-tertiary">
             By creating an account you agree to VaultPoint&apos;s{' '}
-            <Link href="/terms" className="text-accent hover:underline">
+            <Link href="/terms" className="text-accent-light hover:underline">
               Terms
             </Link>
             ,{' '}
-            <Link href="/privacy" className="text-accent hover:underline">
+            <Link href="/privacy" className="text-accent-light hover:underline">
               Privacy Policy
             </Link>
             , and{' '}
-            <Link href="/risk-disclosure" className="text-accent hover:underline">
+            <Link href="/risk-disclosure" className="text-accent-light hover:underline">
               Risk Disclosure
             </Link>
             .
@@ -147,7 +147,7 @@ export default function SignupPage() {
 
         <p className="mt-6 text-center text-sm text-text-secondary">
           Already have an account?{' '}
-          <Link href="/login" className="font-medium text-accent hover:underline">
+          <Link href="/login" className="font-medium text-accent-light hover:underline">
             Log in
           </Link>
         </p>

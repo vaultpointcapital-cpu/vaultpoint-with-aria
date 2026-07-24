@@ -56,7 +56,7 @@ export function DashboardNav({
             className={cn(
               'border-b-2 px-4 py-3.5 text-sm font-medium transition-colors',
               isActive
-                ? 'border-accent text-accent'
+                ? 'border-accent text-accent-light'
                 : 'border-transparent text-text-secondary hover:text-text-primary'
             )}
           >
@@ -70,7 +70,7 @@ export function DashboardNav({
         <button
           onClick={handleLogout}
           title="Log out"
-          className="flex h-8 w-8 items-center justify-center rounded-full bg-gradient-to-br from-accent to-info text-xs font-semibold text-white"
+          className="flex h-10 w-10 items-center justify-center rounded-full bg-gradient-to-br from-accent to-info text-xs font-semibold text-white"
         >
           {initials}
         </button>
