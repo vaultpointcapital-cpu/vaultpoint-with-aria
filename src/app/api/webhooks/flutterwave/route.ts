@@ -2,7 +2,7 @@ import { type NextRequest, NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabase/server';
 import { verifyFlutterwaveSignature, tierFromFlutterwavePlanId } from '@/lib/billing/flutterwave';
 import { syncUserSubscriptionTier } from '@/lib/billing/get-user-tier';
-import { recordWebhookEventIfNew } from '@/lib/billing/webhook-log';
+import { claimWebhookEventForProcessing, markWebhookEventCompleted, markWebhookEventFailed } from '@/lib/billing/webhook-log';
 
 /**
  * NOT YET VERIFIED against a real webhook delivery from Flutterwave —
@@ -56,13 +56,13 @@ export async function POST(request: NextRequest) {
   // secret, not a per-payload HMAC), so unlike Stripe/Paystack the
   // signature itself can't serve as an idempotency key — data.id (the
   // transaction id) is the best per-delivery fingerprint available.
-  const isNew = await recordWebhookEventIfNew({
+  const claim = await claimWebhookEventForProcessing({
     provider: 'flutterwave',
     eventId: String(payload.data.id ?? payload.data.tx_ref ?? payload.data.reference ?? ''),
     eventType: payload.event,
     metadata: { txRef: payload.data.tx_ref ?? payload.data.reference ?? null },
   });
-  if (!isNew) {
+  if (!claim.shouldProcess) {
     return NextResponse.json({ received: true, duplicate: true });
   }
 
@@ -132,8 +132,10 @@ export async function POST(request: NextRequest) {
     }
   } catch (err) {
     console.error('Flutterwave webhook processing error:', err instanceof Error ? err.message : err);
+    await markWebhookEventFailed(claim.eventRowId);
     return NextResponse.json({ error: 'Webhook processing failed' }, { status: 500 });
   }
 
+  await markWebhookEventCompleted(claim.eventRowId);
   return NextResponse.json({ received: true });
 }

@@ -248,6 +248,10 @@ export type BillingWebhookEvent = {
   // supabase/migrations/20260717000000_reconcile_subscriptions_for_billing.sql
   metadata: Record<string, unknown>;
   processed_at: string;
+  // 'processing' -> 'completed' | 'failed'. A retry claim only skips
+  // (true duplicate) on 'completed' — see
+  // 20260724000002_fix_webhook_idempotency_on_partial_failure.sql.
+  status: 'processing' | 'completed' | 'failed';
 };
 
 export type ProfitShareStatus = 'pending' | 'charged' | 'failed' | 'skipped';
@@ -608,8 +612,8 @@ export interface Database {
       };
       billing_webhook_events: {
         Row: BillingWebhookEvent;
-        Insert: Omit<BillingWebhookEvent, 'id' | 'processed_at'>;
-        Update: never; // append-only audit log
+        Insert: Omit<BillingWebhookEvent, 'id' | 'processed_at' | 'status'> & { status?: BillingWebhookEvent['status'] };
+        Update: Pick<BillingWebhookEvent, 'status'>;
         Relationships: [];
       };
       // Written only by the profit-share billing run's service-role

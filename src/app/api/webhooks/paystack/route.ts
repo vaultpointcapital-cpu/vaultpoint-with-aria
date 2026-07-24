@@ -2,7 +2,7 @@ import { type NextRequest, NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabase/server';
 import { verifyPaystackSignature, tierFromPaystackPlanCode } from '@/lib/billing/paystack';
 import { syncUserSubscriptionTier } from '@/lib/billing/get-user-tier';
-import { recordWebhookEventIfNew } from '@/lib/billing/webhook-log';
+import { claimWebhookEventForProcessing, markWebhookEventCompleted, markWebhookEventFailed } from '@/lib/billing/webhook-log';
 
 // Same as the Stripe route: App Router route handlers never auto-parse
 // the body, so request.text() below is already the raw bytes Paystack
@@ -50,13 +50,13 @@ export async function POST(request: NextRequest) {
   // body, so it's already a reliable per-delivery fingerprint — using it
   // as the idempotency key catches exact-duplicate retries the same way
   // a real event id would.
-  const isNew = await recordWebhookEventIfNew({
+  const claim = await claimWebhookEventForProcessing({
     provider: 'paystack',
     eventId: signature as string,
     eventType: payload.event,
     metadata: { subscriptionCode: payload.data.subscription_code ?? payload.data.subscription?.subscription_code ?? null },
   });
-  if (!isNew) {
+  if (!claim.shouldProcess) {
     return NextResponse.json({ received: true, duplicate: true });
   }
 
@@ -202,8 +202,10 @@ export async function POST(request: NextRequest) {
     }
   } catch (err) {
     console.error('Paystack webhook processing error:', err instanceof Error ? err.message : err);
+    await markWebhookEventFailed(claim.eventRowId);
     return NextResponse.json({ error: 'Webhook processing failed' }, { status: 500 });
   }
 
+  await markWebhookEventCompleted(claim.eventRowId);
   return NextResponse.json({ received: true });
 }

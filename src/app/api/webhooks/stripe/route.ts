@@ -3,7 +3,7 @@ import type Stripe from 'stripe';
 import { createServiceClient } from '@/lib/supabase/server';
 import { getStripeClient, tierFromStripePriceId } from '@/lib/billing/stripe';
 import { syncUserSubscriptionTier } from '@/lib/billing/get-user-tier';
-import { recordWebhookEventIfNew } from '@/lib/billing/webhook-log';
+import { claimWebhookEventForProcessing, markWebhookEventCompleted, markWebhookEventFailed } from '@/lib/billing/webhook-log';
 
 // Next.js App Router route handlers never auto-parse the body (unlike the
 // Pages Router's api routes), so request.text() below already gives the
@@ -48,14 +48,16 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Invalid signature' }, { status: 400 });
   }
 
-  const isNew = await recordWebhookEventIfNew({
+  const claim = await claimWebhookEventForProcessing({
     provider: 'stripe',
     eventId: event.id,
     eventType: event.type,
     metadata: { objectId: (event.data.object as { id?: string }).id ?? null },
   });
-  if (!isNew) {
-    // Same event id retried — already applied, ack without reprocessing.
+  if (!claim.shouldProcess) {
+    // Same event id retried, and the prior attempt already completed —
+    // ack without reprocessing. (A retry of an attempt that never
+    // finished is NOT treated as a duplicate — see claimWebhookEventForProcessing.)
     return NextResponse.json({ received: true, duplicate: true });
   }
 
@@ -171,8 +173,10 @@ export async function POST(request: NextRequest) {
     }
   } catch (err) {
     console.error('Stripe webhook processing error:', err instanceof Error ? err.message : err);
+    await markWebhookEventFailed(claim.eventRowId);
     return NextResponse.json({ error: 'Webhook processing failed' }, { status: 500 });
   }
 
+  await markWebhookEventCompleted(claim.eventRowId);
   return NextResponse.json({ received: true });
 }
