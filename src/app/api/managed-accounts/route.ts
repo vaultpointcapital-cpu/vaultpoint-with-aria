@@ -7,6 +7,8 @@ import {
   MANAGED_TIER_TERMS,
 } from '@/lib/validations/managed-accounts';
 import { createNotification } from '@/lib/managed-accounts/notifications';
+import { resolveKycVendor } from '@/lib/kyc/routing';
+import { getOrCreateKycVerificationRow } from '@/lib/kyc/verification-state';
 import { apiError, apiSuccess } from '@/lib/utils/api-response';
 
 /**
@@ -70,7 +72,7 @@ export async function POST(request: NextRequest) {
 
   const { data: profile } = await supabase
     .from('users')
-    .select('subscription_tier')
+    .select('subscription_tier, country_code')
     .eq('id', authData.user.id)
     .single();
 
@@ -134,6 +136,16 @@ export async function POST(request: NextRequest) {
   if (error) {
     return apiError('INTERNAL_ERROR', 'Could not create your managed account.');
   }
+
+  // Spec §5.1/§5.2 step 1 — the kyc_verifications row is created as soon
+  // as the account reaches the KYC step, before any vendor call happens,
+  // so the audit trail exists from the start rather than only once a
+  // vendor confirms something.
+  await getOrCreateKycVerificationRow({
+    userId: authData.user.id,
+    managedAccountId: data.id,
+    vendor: resolveKycVendor(profile?.country_code),
+  });
 
   await createNotification(supabase, {
     userId: authData.user.id,

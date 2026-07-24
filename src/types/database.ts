@@ -395,6 +395,44 @@ export type ManagedAccountNotification = {
   created_at: string;
 };
 
+export type KycVendor = 'verifyme' | 'onfido';
+export type KycVerificationState =
+  | 'not_started'
+  | 'pending'
+  | 'processing'
+  | 'verified'
+  | 'rejected'
+  | 'expired'
+  | 'error';
+
+export type KycVerification = {
+  id: string;
+  user_id: string;
+  managed_account_id: string | null;
+  vendor: KycVendor;
+  state: KycVerificationState;
+  vendor_ref: string | null;
+  // Normalized {checks_passed, reasons[]} only — see the migration's
+  // comment on why raw vendor payloads/documents never land here.
+  result_summary: Record<string, unknown> | null;
+  failure_reason: string | null;
+  submitted_at: string | null;
+  decided_at: string | null;
+  expires_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type KycWebhookEvent = {
+  id: string;
+  vendor: KycVendor;
+  event_id: string;
+  event_type: string;
+  status: 'processing' | 'completed' | 'failed';
+  normalized_payload: Record<string, unknown> | null;
+  received_at: string;
+};
+
 export type AcademyVideo = {
   id: string;
   title: string;
@@ -663,6 +701,24 @@ export interface Database {
         Row: ManagedAccountNotification;
         Insert: Omit<ManagedAccountNotification, 'id' | 'created_at'>;
         Update: Pick<ManagedAccountNotification, 'read_at'>;
+        Relationships: [];
+      };
+      kyc_verifications: {
+        Row: KycVerification;
+        // Only ever written via a service-role client (RLS refuses
+        // client writes outright — verified in
+        // scripts/verify-kyc-rls-tmp.mjs during this migration's shadow
+        // rehearsal). Typed with normal Insert/Update, same as
+        // billing_webhook_events, since the enforcement point is RLS,
+        // not the TS type.
+        Insert: Omit<KycVerification, 'id' | 'created_at' | 'updated_at'>;
+        Update: Partial<Omit<KycVerification, 'id' | 'user_id' | 'created_at'>>;
+        Relationships: [];
+      };
+      kyc_webhook_events: {
+        Row: KycWebhookEvent;
+        Insert: Omit<KycWebhookEvent, 'id' | 'received_at' | 'status'> & { status?: KycWebhookEvent['status'] };
+        Update: Pick<KycWebhookEvent, 'status'>;
         Relationships: [];
       };
       academy_videos: {
