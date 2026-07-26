@@ -253,5 +253,9 @@ export const withdrawalRequestSchema = z.object({
   confirmUnderstanding: z.literal(true, {
     errorMap: () => ({ message: 'You must confirm you understand this withdrawal before continuing' }),
   }),
+  // Step-Up Auth Ticket 2 — the approval_id returned by a prior, already-
+  // approved POST /api/auth/step-up/initiate + /confirm for this exact
+  // account (action_type: 'withdrawal', resource_id: the account id).
+  stepUpApprovalId: z.string().trim().min(1, 'A confirmed step-up approval is required'),
 });
 export type WithdrawalRequestInput = z.infer<typeof withdrawalRequestSchema>;

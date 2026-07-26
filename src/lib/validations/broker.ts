@@ -38,6 +38,11 @@ export const addBrokerConnectionSchema = z
     mtServer: z.string().trim().min(1).optional(),
     mtPlatform: z.enum(['mt4', 'mt5']).optional(),
     mtPassword: z.string().trim().min(1).optional(),
+    // Step-Up Auth Ticket 2 — the approval_id returned by a prior,
+    // already-approved POST /api/auth/step-up/initiate + /confirm
+    // (action_type: 'broker_credential_change', resource_id: null — this
+    // is a new connection, there's no existing id to reference yet).
+    stepUpApprovalId: z.string().trim().min(1, 'A confirmed step-up approval is required'),
   })
   .refine((data) => data.broker !== 'kucoin' || !!data.apiPassphrase, {
     message: 'KuCoin requires an API passphrase in addition to the key and secret',

@@ -395,6 +395,134 @@ export type ManagedAccountNotification = {
   created_at: string;
 };
 
+export type JournalEntry = {
+  id: string;
+  user_id: string;
+  note: string;
+  created_at: string;
+};
+
+// Managed Trader Pathway — a third-party trader manages ANOTHER client's
+// capital. Distinct from ManagedAccount above (VaultPoint itself manages
+// a client's own money) — the two coexist deliberately, see
+// 20260725000000_add_managed_trader_pathway.sql.
+export type ManagedTraderStatus = 'pending' | 'approved' | 'rejected' | 'suspended';
+
+export type ManagedTrader = {
+  id: string;
+  user_id: string;
+  status: ManagedTraderStatus;
+  trailing_90d_return: number | null;
+  max_drawdown: number | null;
+  academy_modules_confirmed: boolean;
+  proposed_profit_split: number;
+  approved_profit_split: number | null;
+  max_clients: number | null;
+  strategy_description: string | null;
+  has_managed_funds_before: boolean | null;
+  has_managed_funds_before_explanation: string | null;
+  understands_trade_only_confirmed_at: string | null;
+  agrees_to_audit_logging_confirmed_at: string | null;
+  reviewer_notes: string | null;
+  reviewed_by: string | null;
+  reviewed_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ManagedSubAccountStatus = 'active' | 'revoked' | 'closed';
+
+export type ManagedSubAccount = {
+  id: string;
+  trader_id: string;
+  client_user_id: string;
+  broker_connection_id: string;
+  status: ManagedSubAccountStatus;
+  allocated_amount: number;
+  profit_split_pct: number;
+  platform_fee_pct: number;
+  poa_signed_at: string | null;
+  poa_document_url: string | null;
+  poa_revoked_at: string | null;
+  disclosure_acknowledged_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ManagedAccountSettlementPayoutStatus = 'pending' | 'paid' | 'failed';
+
+export type ManagedAccountSettlement = {
+  id: string;
+  sub_account_id: string;
+  period_start: string;
+  period_end: string;
+  realized_profit: number;
+  trader_payout: number;
+  platform_fee_amount: number;
+  client_net: number;
+  payout_status: ManagedAccountSettlementPayoutStatus;
+  created_at: string;
+};
+
+export type ManagedAccountAuditEventType =
+  | 'trade_executed'
+  | 'poa_signed'
+  | 'poa_revoked'
+  | 'settlement_calculated'
+  | 'payout_sent';
+
+export type ManagedAccountAuditLogEntry = {
+  id: string;
+  sub_account_id: string;
+  event_type: ManagedAccountAuditEventType;
+  event_data: Record<string, unknown>;
+  created_at: string;
+};
+
+// Step-Up Auth, Ticket 1 — registered push-notification device tokens.
+export type DevicePlatform = 'ios' | 'android';
+
+export type UserDevice = {
+  id: string;
+  user_id: string;
+  platform: DevicePlatform;
+  encrypted_device_token: string;
+  device_token_iv: string;
+  device_token_hash: string;
+  last_seen_at: string;
+  created_at: string;
+  updated_at: string;
+};
+
+// Step-Up Auth, Ticket 2 — approval state machine + its audit trail.
+export type StepUpStatus = 'pending' | 'approved' | 'denied' | 'expired';
+export type StepUpMethod = 'push' | 'totp';
+
+export type StepUpApproval = {
+  id: string;
+  user_id: string;
+  action_type: string;
+  resource_id: string | null;
+  metadata: Record<string, unknown>;
+  methods: StepUpMethod[];
+  status: StepUpStatus;
+  method: StepUpMethod | null;
+  created_at: string;
+  expires_at: string;
+  resolved_at: string | null;
+};
+
+export type StepUpAuditLogEntry = {
+  id: string;
+  approval_id: string;
+  user_id: string;
+  action_type: string;
+  resource_id: string | null;
+  status: StepUpStatus;
+  method: StepUpMethod | null;
+  created_at: string;
+};
+
 export type KycVendor = 'verifyme' | 'onfido';
 export type KycVerificationState =
   | 'not_started'
@@ -408,7 +536,11 @@ export type KycVerificationState =
 export type KycVerification = {
   id: string;
   user_id: string;
+  // Exactly one of these two is non-null — see
+  // kyc_verifications_exactly_one_subject
+  // (20260726000000_extend_managed_trader_application.sql).
   managed_account_id: string | null;
+  managed_trader_id: string | null;
   vendor: KycVendor;
   state: KycVerificationState;
   vendor_ref: string | null;
@@ -703,6 +835,67 @@ export interface Database {
         Update: Pick<ManagedAccountNotification, 'read_at'>;
         Relationships: [];
       };
+      journal_entries: {
+        Row: JournalEntry;
+        Insert: Omit<JournalEntry, 'id' | 'created_at'>;
+        Update: never; // append-only, same as the Telegram bot's journal.log
+        Relationships: [];
+      };
+      managed_traders: {
+        Row: ManagedTrader;
+        // Client writes go through service-role only (see the migration's
+        // RLS comment) — the /apply route inserts via createServiceClient
+        // after validating the session, never a raw client insert.
+        Insert: Omit<ManagedTrader, 'id' | 'created_at' | 'updated_at'>;
+        Update: Partial<Omit<ManagedTrader, 'id' | 'user_id' | 'created_at'>>;
+        Relationships: [];
+      };
+      managed_sub_accounts: {
+        Row: ManagedSubAccount;
+        Insert: Omit<ManagedSubAccount, 'id' | 'created_at' | 'updated_at'>;
+        Update: Partial<Omit<ManagedSubAccount, 'id' | 'trader_id' | 'client_user_id' | 'created_at'>>;
+        Relationships: [];
+      };
+      managed_account_settlements: {
+        Row: ManagedAccountSettlement;
+        Insert: Omit<ManagedAccountSettlement, 'id' | 'created_at'>;
+        Update: Pick<ManagedAccountSettlement, 'payout_status'>;
+        Relationships: [];
+      };
+      managed_account_audit_log: {
+        Row: ManagedAccountAuditLogEntry;
+        Insert: Omit<ManagedAccountAuditLogEntry, 'id' | 'created_at'>;
+        Update: never; // append-only
+        Relationships: [];
+      };
+      user_devices: {
+        Row: UserDevice;
+        // Written only via src/lib/auth/devices.ts's service-role
+        // registerDevice() — RLS refuses client writes outright (see the
+        // migration's RLS comment).
+        Insert: Omit<UserDevice, 'id' | 'created_at' | 'updated_at'>;
+        Update: Partial<Omit<UserDevice, 'id' | 'created_at'>>;
+        Relationships: [];
+      };
+      // Written only via src/lib/auth/step-up.ts's service-role client —
+      // RLS refuses client writes outright (see the migration's RLS
+      // comment). methods is decided once at insert and never revised.
+      step_up_approvals: {
+        Row: StepUpApproval;
+        Insert: Omit<StepUpApproval, 'id' | 'created_at' | 'status' | 'method' | 'resolved_at'> & {
+          status?: StepUpStatus;
+          method?: StepUpMethod | null;
+          resolved_at?: string | null;
+        };
+        Update: never;
+        Relationships: [];
+      };
+      step_up_audit_log: {
+        Row: StepUpAuditLogEntry;
+        Insert: Omit<StepUpAuditLogEntry, 'id' | 'created_at'>;
+        Update: never; // append-only
+        Relationships: [];
+      };
       kyc_verifications: {
         Row: KycVerification;
         // Only ever written via a service-role client (RLS refuses
@@ -792,6 +985,20 @@ export interface Database {
         Returns: {
           contribution_id: string;
           new_current_amount: number;
+        }[];
+      };
+      // supabase/migrations/20260726000002_add_step_up_approvals.sql
+      confirm_step_up_approval: {
+        Args: {
+          p_approval_id: string;
+          p_user_id: string;
+          p_decision: StepUpStatus;
+          p_method: StepUpMethod;
+        };
+        Returns: {
+          out_status: StepUpStatus;
+          out_resolved_at: string;
+          already_resolved: boolean;
         }[];
       };
     };

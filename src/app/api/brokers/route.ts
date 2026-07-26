@@ -2,6 +2,7 @@ import { type NextRequest } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 import { encrypt, maskKey } from '@/lib/encryption/broker-keys';
 import { addBrokerConnectionSchema } from '@/lib/validations/broker';
+import { isStepUpApproved } from '@/lib/auth/step-up';
 import { apiError, apiSuccess } from '@/lib/utils/api-response';
 
 /**
@@ -61,8 +62,24 @@ export async function POST(request: NextRequest) {
     return apiError('VALIDATION_ERROR', 'Invalid broker connection data.', parsed.error.flatten());
   }
 
-  const { broker, label, apiKey, apiSecret, apiPassphrase, mtLogin, mtServer, mtPlatform, mtPassword } =
+  const { broker, label, apiKey, apiSecret, apiPassphrase, mtLogin, mtServer, mtPlatform, mtPassword, stepUpApprovalId } =
     parsed.data;
+
+  // Step-Up Auth Ticket 2 — "broker-credential-change flow", the other
+  // highest-risk flow the spec names explicitly. resource_id is null: a
+  // new connection has no id to reference until after this insert
+  // succeeds. Same known consequence as the withdrawal gate: a user with
+  // no registered device (Ticket 1) and no TOTP enrollment (Ticket 3,
+  // not built) has no way to ever produce an 'approved' approval yet.
+  const stepUpOk = await isStepUpApproved({
+    userId: authData.user.id,
+    approvalToken: stepUpApprovalId,
+    actionType: 'broker_credential_change',
+    resourceId: null,
+  });
+  if (!stepUpOk) {
+    return apiError('VALIDATION_ERROR', 'Adding a broker connection requires a confirmed step-up approval.');
+  }
 
   // Exactly one of these two credential sets is present, enforced by
   // addBrokerConnectionSchema's .refine() checks above — apiKey/apiSecret
