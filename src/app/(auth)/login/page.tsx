@@ -43,6 +43,17 @@ export default function LoginPage() {
       return;
     }
 
+    // Fire-and-forget-ish, but awaited: the closest thing to a
+    // server-side "session created" hook this flow has, since
+    // signInWithPassword() above runs entirely client-side. A failure
+    // here (network blip, Resend down) must never block the actual
+    // login — see src/app/api/auth/login-device/route.ts.
+    try {
+      await fetch('/api/auth/login-device', { method: 'POST' });
+    } catch {
+      // Ignored on purpose — see comment above.
+    }
+
     router.push('/dashboard');
     router.refresh();
   }

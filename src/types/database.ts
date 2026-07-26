@@ -523,6 +523,18 @@ export type StepUpAuditLogEntry = {
   created_at: string;
 };
 
+// Step-Up Auth, Ticket 6 — recognized browser fingerprints for the web
+// login flow's new-device alert.
+export type LoginDeviceFingerprint = {
+  id: string;
+  user_id: string;
+  fingerprint_hash: string;
+  user_agent: string | null;
+  first_seen_ip: string | null;
+  created_at: string;
+  last_seen_at: string;
+};
+
 export type KycVendor = 'verifyme' | 'onfido';
 export type KycVerificationState =
   | 'not_started'
@@ -894,6 +906,17 @@ export interface Database {
         Row: StepUpAuditLogEntry;
         Insert: Omit<StepUpAuditLogEntry, 'id' | 'created_at'>;
         Update: never; // append-only
+        Relationships: [];
+      };
+      // Written only via src/lib/auth/login-alerts.ts's service-role
+      // client — RLS refuses client writes outright (see the migration's
+      // RLS comment).
+      login_device_fingerprints: {
+        Row: LoginDeviceFingerprint;
+        Insert: Omit<LoginDeviceFingerprint, 'id' | 'created_at' | 'last_seen_at'> & {
+          last_seen_at?: string;
+        };
+        Update: Pick<LoginDeviceFingerprint, 'last_seen_at'>;
         Relationships: [];
       };
       kyc_verifications: {
