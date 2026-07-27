@@ -68,9 +68,10 @@ export async function POST(request: NextRequest) {
   // Step-Up Auth Ticket 2 — "broker-credential-change flow", the other
   // highest-risk flow the spec names explicitly. resource_id is null: a
   // new connection has no id to reference until after this insert
-  // succeeds. Same known consequence as the withdrawal gate: a user with
-  // no registered device (Ticket 1) and no TOTP enrollment (Ticket 3,
-  // not built) has no way to ever produce an 'approved' approval yet.
+  // succeeds. A user with neither a registered device (Ticket 1) nor an
+  // active TOTP enrollment (Ticket 3) still has no way to ever produce
+  // an 'approved' approval — both are opt-in, so this remains a real
+  // gate some users haven't set up yet, not a fully resolved one.
   const stepUpOk = await isStepUpApproved({
     userId: authData.user.id,
     approvalToken: stepUpApprovalId,

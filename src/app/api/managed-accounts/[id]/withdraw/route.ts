@@ -83,10 +83,10 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
   // this exact user + action_type + account id; a prior initiate/confirm
   // for a different account, or one that's merely pending/denied/expired,
   // is rejected here. Known consequence, same as the KYC-gated funding
-  // flow: a user with no registered device (Ticket 1) has no way to ever
-  // produce an 'approved' one yet (no TOTP enrollment until Ticket 3
-  // either) — this route is a real, correctly-enforced gate that isn't
-  // fully satisfiable for every user until that follow-up work lands.
+  // flow: a user with neither a registered device (Ticket 1) nor an
+  // active TOTP enrollment (Ticket 3) has no way to ever produce an
+  // 'approved' one — both are opt-in, so this gate isn't satisfiable for
+  // every user until they set one up.
   const stepUpOk = await isStepUpApproved({
     userId: authData.user.id,
     approvalToken: stepUpApprovalId,

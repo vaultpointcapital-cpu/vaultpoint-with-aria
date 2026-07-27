@@ -535,6 +535,20 @@ export type LoginDeviceFingerprint = {
   last_seen_at: string;
 };
 
+// Step-Up Auth, Ticket 3 — TOTP enrollment.
+export type TotpEnrollmentStatus = 'pending' | 'active';
+
+export type TotpEnrollment = {
+  id: string;
+  user_id: string;
+  encrypted_secret: string;
+  secret_iv: string;
+  status: TotpEnrollmentStatus;
+  last_consumed_counter: number | null;
+  created_at: string;
+  activated_at: string | null;
+};
+
 export type KycVendor = 'verifyme' | 'onfido';
 export type KycVerificationState =
   | 'not_started'
@@ -917,6 +931,18 @@ export interface Database {
           last_seen_at?: string;
         };
         Update: Pick<LoginDeviceFingerprint, 'last_seen_at'>;
+        Relationships: [];
+      };
+      // Written only via src/lib/auth/totp-enrollment.ts's service-role
+      // client — RLS refuses client writes outright.
+      totp_enrollments: {
+        Row: TotpEnrollment;
+        Insert: Omit<TotpEnrollment, 'id' | 'created_at' | 'status' | 'last_consumed_counter' | 'activated_at'> & {
+          status?: TotpEnrollmentStatus;
+          last_consumed_counter?: number | null;
+          activated_at?: string | null;
+        };
+        Update: Partial<Pick<TotpEnrollment, 'encrypted_secret' | 'secret_iv' | 'status' | 'last_consumed_counter' | 'activated_at'>>;
         Relationships: [];
       };
       kyc_verifications: {

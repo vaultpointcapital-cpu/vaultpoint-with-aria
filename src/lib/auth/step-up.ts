@@ -2,6 +2,7 @@ import crypto from 'crypto';
 import { SignJWT, jwtVerify, errors as joseErrors, type JWTPayload } from 'jose';
 import { createServiceClient } from '@/lib/supabase/server';
 import { decrypt } from '@/lib/encryption/broker-keys';
+import { hasActiveTotpEnrollment, verifyActiveTotpCode } from '@/lib/auth/totp-enrollment';
 import type { StepUpMethod, StepUpStatus } from '@/types/database';
 
 const TTL_SECONDS = 90;
@@ -64,10 +65,10 @@ export interface InitiateStepUpResult {
  * the spec's endpoint contract lists: 'push' is offered only if the user
  * has at least one registered device (src/lib/auth/devices.ts) — confirm
  * verifies it against that device's raw token (see verifyPushResponse
- * below), a real check, not a stub. 'totp' is never offered — no
- * enrollment exists until Ticket 3 ships. A user with zero registered
- * devices gets methods: [] and has no way to ever resolve this approval,
- * same known trade-off as the KYC-gated funding flow.
+ * below), a real check, not a stub. 'totp' is offered only if the user
+ * has an ACTIVE TOTP enrollment (Ticket 3 — src/lib/auth/totp-enrollment.ts).
+ * A user with neither gets methods: [] and has no way to ever resolve
+ * this approval, same known trade-off as the KYC-gated funding flow.
  */
 export async function initiateStepUp(params: {
   userId: string;
@@ -77,12 +78,15 @@ export async function initiateStepUp(params: {
 }): Promise<InitiateStepUpResult> {
   const supabase = createServiceClient();
 
-  const { count } = await supabase
-    .from('user_devices')
-    .select('id', { count: 'exact', head: true })
-    .eq('user_id', params.userId);
+  const [devicesResult, totpActive] = await Promise.all([
+    supabase.from('user_devices').select('id', { count: 'exact', head: true }).eq('user_id', params.userId),
+    hasActiveTotpEnrollment(params.userId),
+  ]);
 
-  const methods: StepUpMethod[] = count && count > 0 ? ['push'] : [];
+  const methods: StepUpMethod[] = [
+    ...(devicesResult.count && devicesResult.count > 0 ? (['push'] as const) : []),
+    ...(totpActive ? (['totp'] as const) : []),
+  ];
   const expiresAt = new Date(Date.now() + TTL_SECONDS * 1000);
 
   const { data: row, error } = await supabase
@@ -202,10 +206,10 @@ export async function confirmStepUp(params: {
         signedResponse: params.signedResponse,
       });
       decision = verified ? 'approved' : 'denied';
+    } else if (params.method === 'totp' && params.totpCode) {
+      const verified = await verifyActiveTotpCode({ userId: params.userId, code: params.totpCode });
+      decision = verified ? 'approved' : 'denied';
     }
-    // method === 'totp' can't reach here today — never in row.methods
-    // until Ticket 3 adds enrollment — so it always falls through to the
-    // METHOD_NOT_OFFERED check above.
   }
 
   const { data: result, error } = await supabase.rpc('confirm_step_up_approval', {

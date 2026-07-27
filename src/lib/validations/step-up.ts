@@ -11,9 +11,9 @@ export type InitiateStepUpInput = z.infer<typeof initiateStepUpSchema>;
 /**
  * signed_response is a hex-encoded HMAC-SHA256 (64 hex chars) — see
  * verifyPushResponse in src/lib/auth/step-up.ts for what it's computed
- * over. totp_code is the standard 6-digit TOTP format, accepted at the
- * schema level even though no enrollment exists yet (Ticket 3) — a
- * request using it is rejected as "method not offered", never faked.
+ * over. totp_code is the standard 6-digit TOTP format, verified for real
+ * against an active enrollment (Ticket 3 — src/lib/auth/totp-enrollment.ts)
+ * when one exists; otherwise rejected as "method not offered", never faked.
  */
 export const confirmStepUpSchema = z
   .object({
