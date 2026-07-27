@@ -3,6 +3,8 @@ import { SignJWT, jwtVerify, errors as joseErrors, type JWTPayload } from 'jose'
 import { createServiceClient } from '@/lib/supabase/server';
 import { decrypt } from '@/lib/encryption/broker-keys';
 import { hasActiveTotpEnrollment, verifyActiveTotpCode } from '@/lib/auth/totp-enrollment';
+import { getChatIdForUser, getUserIdForChatId } from '@/lib/auth/telegram-link';
+import { sendMessage, buildApproveDenyKeyboard } from '@/lib/telegram/api';
 import type { StepUpMethod, StepUpStatus } from '@/types/database';
 
 const TTL_SECONDS = 90;
@@ -67,8 +69,13 @@ export interface InitiateStepUpResult {
  * verifies it against that device's raw token (see verifyPushResponse
  * below), a real check, not a stub. 'totp' is offered only if the user
  * has an ACTIVE TOTP enrollment (Ticket 3 — src/lib/auth/totp-enrollment.ts).
- * A user with neither gets methods: [] and has no way to ever resolve
- * this approval, same known trade-off as the KYC-gated funding flow.
+ * 'telegram' is offered whenever the user has linked a chat (Ticket 4 —
+ * src/lib/auth/telegram-link.ts): approve/deny happens via inline
+ * keyboard buttons sent below, resolved entirely server-side by
+ * POST /api/webhooks/telegram/updates — see confirmStepUpViaTelegram.
+ * A user with none of the three gets methods: [] and has no way to ever
+ * resolve this approval, same known trade-off as the KYC-gated funding
+ * flow.
  */
 export async function initiateStepUp(params: {
   userId: string;
@@ -78,14 +85,16 @@ export async function initiateStepUp(params: {
 }): Promise<InitiateStepUpResult> {
   const supabase = createServiceClient();
 
-  const [devicesResult, totpActive] = await Promise.all([
+  const [devicesResult, totpActive, telegramChatId] = await Promise.all([
     supabase.from('user_devices').select('id', { count: 'exact', head: true }).eq('user_id', params.userId),
     hasActiveTotpEnrollment(params.userId),
+    getChatIdForUser(params.userId),
   ]);
 
   const methods: StepUpMethod[] = [
     ...(devicesResult.count && devicesResult.count > 0 ? (['push'] as const) : []),
     ...(totpActive ? (['totp'] as const) : []),
+    ...(telegramChatId ? (['telegram'] as const) : []),
   ];
   const expiresAt = new Date(Date.now() + TTL_SECONDS * 1000);
 
@@ -110,6 +119,14 @@ export async function initiateStepUp(params: {
     action_type: params.actionType,
     resource_id: params.resourceId ?? null,
   });
+
+  if (telegramChatId) {
+    await sendMessage({
+      chatId: telegramChatId,
+      text: `VaultPoint: approve this ${params.actionType} request? Expires in 90 seconds.`,
+      replyMarkup: buildApproveDenyKeyboard(row.id),
+    });
+  }
 
   return { approvalId: token, expiresAt: row.expires_at, methods };
 }
@@ -222,6 +239,56 @@ export async function confirmStepUp(params: {
   const [resolved] = result ?? [];
   if (error || !resolved) {
     throw new Error(`Failed to resolve step-up approval: ${error?.message ?? 'no row returned'}`);
+  }
+
+  return { ok: true, status: resolved.out_status };
+}
+
+export type ConfirmViaTelegramOutcome =
+  | { ok: true; status: StepUpStatus }
+  | { ok: false; reason: 'NOT_LINKED' | 'NOT_FOUND' | 'METHOD_NOT_OFFERED' };
+
+/**
+ * Called by POST /api/webhooks/telegram/updates for a callback_query —
+ * never by an authenticated HTTP caller (there's no session here, only
+ * Telegram's own webhook secret and the chat_id the callback arrived
+ * from). The proof of authorization IS that combination: the webhook
+ * route already verified the request came from Telegram, and this
+ * checks the chat_id maps to the approval's own user — nothing else
+ * (no signature, no code) gates the decision, since which inline button
+ * was tapped already IS the user's decision.
+ */
+export async function confirmStepUpViaTelegram(params: {
+  chatId: string;
+  approvalRowId: string;
+  decision: 'approved' | 'denied';
+}): Promise<ConfirmViaTelegramOutcome> {
+  const userId = await getUserIdForChatId(params.chatId);
+  if (!userId) return { ok: false, reason: 'NOT_LINKED' };
+
+  const supabase = createServiceClient();
+  const { data: row } = await supabase
+    .from('step_up_approvals')
+    .select('id, status, methods')
+    .eq('id', params.approvalRowId)
+    .eq('user_id', userId)
+    .maybeSingle();
+
+  if (!row) return { ok: false, reason: 'NOT_FOUND' };
+  if (row.status === 'pending' && !row.methods.includes('telegram')) {
+    return { ok: false, reason: 'METHOD_NOT_OFFERED' };
+  }
+
+  const { data: result, error } = await supabase.rpc('confirm_step_up_approval', {
+    p_approval_id: row.id,
+    p_user_id: userId,
+    p_decision: params.decision,
+    p_method: 'telegram',
+  });
+
+  const [resolved] = result ?? [];
+  if (error || !resolved) {
+    throw new Error(`Failed to resolve step-up approval via Telegram: ${error?.message ?? 'no row returned'}`);
   }
 
   return { ok: true, status: resolved.out_status };

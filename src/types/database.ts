@@ -496,7 +496,7 @@ export type UserDevice = {
 
 // Step-Up Auth, Ticket 2 — approval state machine + its audit trail.
 export type StepUpStatus = 'pending' | 'approved' | 'denied' | 'expired';
-export type StepUpMethod = 'push' | 'totp';
+export type StepUpMethod = 'push' | 'totp' | 'telegram';
 
 export type StepUpApproval = {
   id: string;
@@ -547,6 +547,23 @@ export type TotpEnrollment = {
   last_consumed_counter: number | null;
   created_at: string;
   activated_at: string | null;
+};
+
+// Step-Up Auth, Ticket 4 — Telegram account linking.
+export type TelegramLinkCode = {
+  id: string;
+  user_id: string;
+  code: string;
+  created_at: string;
+  expires_at: string;
+  consumed_at: string | null;
+};
+
+export type TelegramLink = {
+  id: string;
+  user_id: string;
+  chat_id: string;
+  linked_at: string;
 };
 
 export type KycVendor = 'verifyme' | 'onfido';
@@ -943,6 +960,20 @@ export interface Database {
           activated_at?: string | null;
         };
         Update: Partial<Pick<TotpEnrollment, 'encrypted_secret' | 'secret_iv' | 'status' | 'last_consumed_counter' | 'activated_at'>>;
+        Relationships: [];
+      };
+      // Written only via src/lib/auth/telegram-link.ts's service-role
+      // client — RLS refuses client writes outright.
+      telegram_link_codes: {
+        Row: TelegramLinkCode;
+        Insert: Omit<TelegramLinkCode, 'id' | 'created_at' | 'consumed_at'> & { consumed_at?: string | null };
+        Update: Pick<TelegramLinkCode, 'consumed_at'>;
+        Relationships: [];
+      };
+      telegram_links: {
+        Row: TelegramLink;
+        Insert: Omit<TelegramLink, 'id' | 'linked_at'> & { linked_at?: string };
+        Update: never;
         Relationships: [];
       };
       kyc_verifications: {
