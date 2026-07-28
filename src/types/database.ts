@@ -579,11 +579,7 @@ export type KycVerificationState =
 export type KycVerification = {
   id: string;
   user_id: string;
-  // Exactly one of these two is non-null — see
-  // kyc_verifications_exactly_one_subject
-  // (20260726000000_extend_managed_trader_application.sql).
   managed_account_id: string | null;
-  managed_trader_id: string | null;
   vendor: KycVendor;
   state: KycVerificationState;
   vendor_ref: string | null;
