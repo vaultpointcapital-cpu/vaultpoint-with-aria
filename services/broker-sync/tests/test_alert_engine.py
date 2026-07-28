@@ -211,3 +211,142 @@ class TestNoDirectBrokerCalls:
         queried_tables = {c.table_name for c in fake_supabase.calls}
         allowed_tables = {"alerts", "positions", "manual_assets", "portfolio_snapshots", "users", "alert_history"}
         assert queried_tables <= allowed_tables
+
+    async def test_multiple_simultaneous_alerts_all_fire_none_dropped(self, fake_supabase):
+        """Day 6 launch-sprint item: 'test multiple simultaneous alerts
+        firing at once — confirm none get dropped or duplicated.' Three
+        alerts that all satisfy their condition in the same
+        evaluate_all_alerts() cycle — asserts all three actually reach
+        alert_history (none silently dropped) and each exactly once (no
+        duplicate firing within a single cycle)."""
+        fake_supabase.select_responses[("alerts", "*")] = [
+            make_alert(id="alert-price", condition_type="price", symbol="BTCUSDT", operator="above", threshold=64000),
+            make_alert(id="alert-pnl-pct", condition_type="pnl_pct", operator="above", threshold=5),
+            make_alert(id="alert-margin", condition_type="margin_pct", operator="above", threshold=1),
+        ]
+        fake_supabase.select_responses[("positions", "*")] = [BTC_POSITION]
+        fake_supabase.select_responses[("users", "email")] = [{"email": "user@example.com"}]
+        fake_supabase.select_responses[("manual_assets", "value")] = []
+
+        await alert_engine.evaluate_all_alerts()
+
+        history_inserts = fake_supabase.calls_for("alert_history", "insert")
+        fired_alert_ids = [c.values["alert_id"] for c in history_inserts]
+        assert sorted(fired_alert_ids) == ["alert-margin", "alert-pnl-pct", "alert-price"]
+        # Each id appears exactly once — not duplicated within this cycle.
+        assert len(fired_alert_ids) == len(set(fired_alert_ids))
+
+    async def test_one_alert_failing_does_not_block_the_others_in_the_same_cycle(self, fake_supabase):
+        """A single malformed/erroring alert must not take the rest of
+        the batch down with it — evaluate_all_alerts catches per-alert,
+        per its own module docstring/loop. Alert 'alert-bad' is missing
+        'operator', which raises inside _condition_met; the two well-formed
+        alerts on either side of it in the list must still fire."""
+        bad_alert = make_alert(id="alert-bad", condition_type="pnl_pct", threshold=5)
+        del bad_alert["operator"]  # _condition_met(alert["operator"], ...) raises KeyError
+
+        fake_supabase.select_responses[("alerts", "*")] = [
+            make_alert(id="alert-before", condition_type="pnl_pct", operator="above", threshold=5),
+            bad_alert,
+            make_alert(id="alert-after", condition_type="margin_pct", operator="above", threshold=1),
+        ]
+        fake_supabase.select_responses[("positions", "*")] = [BTC_POSITION]
+        fake_supabase.select_responses[("users", "email")] = [{"email": "user@example.com"}]
+        fake_supabase.select_responses[("manual_assets", "value")] = []
+
+        await alert_engine.evaluate_all_alerts()
+
+        history_inserts = fake_supabase.calls_for("alert_history", "insert")
+        fired_alert_ids = {c.values["alert_id"] for c in history_inserts}
+        assert fired_alert_ids == {"alert-before", "alert-after"}
+
+
+class TestDeliveryAcrossMultipleAccounts:
+    """Day 8 launch-sprint item: 'Trigger multiple alerts simultaneously
+    across different accounts — confirm the queue/notification system
+    doesn't drop or delay any of them beyond an acceptable threshold.'
+    """
+
+    async def test_multiple_users_alerts_all_recorded_none_dropped(self, fake_supabase):
+        """Three different users, each with their own alert, all firing in
+        the same evaluate_all_alerts() cycle. Day 6 only proved this for
+        multiple alerts belonging to the SAME user in one cycle — this
+        proves alert_history gets a row for every user, not just every
+        alert."""
+        fake_supabase.select_responses[("alerts", "*")] = [
+            make_alert(id="alert-u1", user_id="user-1", condition_type="pnl_pct", operator="above", threshold=5),
+            make_alert(id="alert-u2", user_id="user-2", condition_type="pnl_pct", operator="above", threshold=5),
+            make_alert(id="alert-u3", user_id="user-3", condition_type="pnl_pct", operator="above", threshold=5),
+        ]
+        fake_supabase.select_responses[("positions", "*")] = [BTC_POSITION]
+        fake_supabase.select_responses[("users", "email")] = [{"email": "user@example.com"}]
+
+        await alert_engine.evaluate_all_alerts()
+
+        history_inserts = fake_supabase.calls_for("alert_history", "insert")
+        fired_user_ids = sorted(c.values["user_id"] for c in history_inserts)
+        assert fired_user_ids == ["user-1", "user-2", "user-3"]
+
+    async def test_slow_delivery_for_one_user_delays_but_never_drops_the_next_users_alert(
+        self, fake_supabase, monkeypatch
+    ):
+        """evaluate_all_alerts processes alerts in a plain sequential
+        for-loop and _fire_alert awaits a real network call
+        (deliver_alert_email) before returning — there is no concurrency
+        or queue here. This proves that directly: three different users'
+        alerts, each delivery artificially delayed 0.3s, confirming (a)
+        delivery for user N+1 never starts until user N's has fully
+        finished (no fan-out), and (b) despite the serialization, nothing
+        is ever dropped — all three still reach alert_history. Flags a
+        real scalability gap for the Day 8 report: a slow or hanging
+        Resend call for one user's alert delays every other user's alert
+        in that same cycle, unbounded by anything except deliver_alert_
+        email's own httpx timeout (10s) times however many alerts are
+        queued behind it.
+        """
+        import asyncio
+        import time
+
+        delivery_order = []
+
+        async def _delayed_email(**kwargs):
+            delivery_order.append(("start", kwargs["to_email"]))
+            await asyncio.sleep(0.3)
+            delivery_order.append(("done", kwargs["to_email"]))
+            return True
+
+        async def _instant_in_app(**kwargs):
+            return True
+
+        monkeypatch.setattr(alert_engine, "deliver_alert_email", _delayed_email)
+        monkeypatch.setattr(alert_engine, "deliver_alert_in_app", _instant_in_app)
+
+        fake_supabase.select_responses[("alerts", "*")] = [
+            make_alert(id="alert-u1", user_id="user-1", condition_type="pnl_pct", operator="above", threshold=5),
+            make_alert(id="alert-u2", user_id="user-2", condition_type="pnl_pct", operator="above", threshold=5),
+            make_alert(id="alert-u3", user_id="user-3", condition_type="pnl_pct", operator="above", threshold=5),
+        ]
+        fake_supabase.select_responses[("positions", "*")] = [BTC_POSITION]
+        fake_supabase.select_responses[("users", "email")] = [{"email": "user@example.com"}]
+
+        started = time.monotonic()
+        await alert_engine.evaluate_all_alerts()
+        elapsed = time.monotonic() - started
+
+        history_inserts = fake_supabase.calls_for("alert_history", "insert")
+        assert len(history_inserts) == 3  # nothing dropped despite the delay
+
+        assert delivery_order == [
+            ("start", "user@example.com"),
+            ("done", "user@example.com"),
+            ("start", "user@example.com"),
+            ("done", "user@example.com"),
+            ("start", "user@example.com"),
+            ("done", "user@example.com"),
+        ]  # sequential: N+1 never starts before N finishes
+
+        # 3 alerts x 0.3s delivered one after another -> ~0.9s. A wide
+        # lower bound (0.8s) tolerates scheduler jitter while still
+        # failing if this ever becomes concurrent (elapsed would drop
+        # to ~0.3s).
+        assert elapsed >= 0.8, f"expected ~3x0.3s sequential delivery, took {elapsed:.2f}s"

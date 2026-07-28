@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { formatDistanceToNow } from 'date-fns';
-import { Trash2 } from 'lucide-react';
+import { Trash2, Loader2, CheckCircle2, AlertTriangle, CircleSlash } from 'lucide-react';
 import { Card } from '@/components/ui/card';
 import { cn } from '@/lib/utils/cn';
 import type { BrokerConnectionSummary } from '@/components/brokers/types';
@@ -27,6 +27,13 @@ const STATUS_LABELS: Record<SyncStatus, string> = {
   connected: 'Connected',
   error: 'Error',
   disconnected: 'Disconnected',
+};
+
+const STATUS_ICONS: Record<SyncStatus, typeof CheckCircle2> = {
+  pending: Loader2,
+  connected: CheckCircle2,
+  error: AlertTriangle,
+  disconnected: CircleSlash,
 };
 
 interface BrokerConnectionCardProps {
@@ -71,6 +78,8 @@ export function BrokerConnectionCard({
     // No need to reset — the card unmounts once removed from the parent's list.
   }
 
+  const StatusIcon = STATUS_ICONS[connection.sync_status];
+
   return (
     <Card className="flex items-center justify-between gap-4">
       <div className="min-w-0">
@@ -79,10 +88,13 @@ export function BrokerConnectionCard({
           <span className="text-xs text-text-tertiary">{BROKER_LABELS[connection.broker]}</span>
           <span
             className={cn(
-              'shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide',
+              'flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide',
               STATUS_STYLES[connection.sync_status]
             )}
           >
+            <StatusIcon
+              className={cn('h-3 w-3', connection.sync_status === 'pending' && 'animate-spin')}
+            />
             {STATUS_LABELS[connection.sync_status]}
           </span>
         </div>
@@ -106,7 +118,7 @@ export function BrokerConnectionCard({
           <button
             type="button"
             onClick={() => onAuthorizeExecutionClick(connection)}
-            className="mt-1.5 text-xs font-medium text-accent hover:underline"
+            className="mt-1.5 text-xs font-medium text-accent-light hover:underline"
           >
             Authorize for trade execution
           </button>
@@ -137,7 +149,7 @@ export function BrokerConnectionCard({
               <button
                 type="button"
                 onClick={() => onManagedModeClick(connection)}
-                className="text-xs font-medium text-accent hover:underline"
+                className="text-xs font-medium text-accent-light hover:underline"
               >
                 Enable Managed Mode
               </button>
@@ -151,7 +163,7 @@ export function BrokerConnectionCard({
         onClick={handleDisconnect}
         disabled={isDisconnecting}
         aria-label={`Disconnect ${connection.label}`}
-        className="shrink-0 rounded-md p-1.5 text-text-tertiary transition-colors hover:bg-warning/10 hover:text-warning disabled:opacity-50"
+        className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md text-text-tertiary transition-colors hover:bg-warning/10 hover:text-warning disabled:opacity-50"
       >
         <Trash2 className="h-4 w-4" />
       </button>

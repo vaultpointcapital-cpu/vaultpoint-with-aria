@@ -73,6 +73,14 @@ export function AriaChat() {
       <CardHeader className="border-b border-border px-5 pb-4 pt-5">
         <CardTitle>Aria</CardTitle>
         <CardDescription>Your AI portfolio &amp; market advisor</CardDescription>
+        {/* Persistent, not dependent on what Aria's response happens to
+            say in any given message — the system prompt instructs the
+            model to frame answers as information, not advice
+            (src/app/api/aria/chat/route.ts), but that alone isn't
+            visible to a user reading the chat. This is. */}
+        <p className="text-[11px] text-text-tertiary">
+          Aria is an AI assistant, not a licensed financial advisor. Informational only — not financial advice.
+        </p>
       </CardHeader>
 
       <div className="flex-1 space-y-4 overflow-y-auto px-5 py-4">
@@ -125,7 +133,7 @@ function ChatBubble({ message }: { message: ChatMessage }) {
       <span
         className={cn(
           'mb-1 text-[10px] font-semibold uppercase tracking-wide',
-          isUser ? 'text-success' : 'text-accent'
+          isUser ? 'text-success' : 'text-accent-light'
         )}
       >
         {isUser ? 'You' : 'Aria'}
@@ -146,7 +154,7 @@ function ChatBubble({ message }: { message: ChatMessage }) {
               href={source.url}
               target="_blank"
               rel="noopener noreferrer"
-              className="block truncate text-[11px] text-text-tertiary hover:text-accent hover:underline"
+              className="block truncate text-[11px] text-text-tertiary hover:text-accent-light hover:underline"
             >
               {source.title}
             </a>
@@ -160,7 +168,7 @@ function ChatBubble({ message }: { message: ChatMessage }) {
 function ThinkingBubble() {
   return (
     <div className="flex flex-col items-start">
-      <span className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-accent">
+      <span className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-accent-light">
         Aria
       </span>
       <div className="flex items-center gap-1.5 rounded-lg bg-accent/10 px-3 py-2.5" aria-live="polite">

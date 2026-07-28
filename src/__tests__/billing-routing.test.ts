@@ -6,10 +6,15 @@ describe('resolveProvider', () => {
     expect(resolveProvider({ country: 'NG' })).toBe('paystack');
   });
 
-  it('routes every other country to Stripe', () => {
+  it('routes non-African countries to Stripe', () => {
     expect(resolveProvider({ country: 'US' })).toBe('stripe');
     expect(resolveProvider({ country: 'GB' })).toBe('stripe');
-    expect(resolveProvider({ country: 'ZA' })).toBe('stripe');
+  });
+
+  it('routes other African markets to Flutterwave', () => {
+    expect(resolveProvider({ country: 'GH' })).toBe('flutterwave');
+    expect(resolveProvider({ country: 'KE' })).toBe('flutterwave');
+    expect(resolveProvider({ country: 'ZA' })).toBe('flutterwave');
   });
 
   it('defaults to Stripe when country is missing', () => {

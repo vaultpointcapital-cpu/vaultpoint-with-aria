@@ -2,11 +2,13 @@ import { z } from 'zod';
 import type { ManagedTier, SubscriptionTier, WithdrawalWindowCadence } from '@/types/database';
 
 /**
- * Which subscription tier unlocks which Managed Tier. Placeholder
- * mapping — the spec's PRD Section 6 (Managed Tier eligibility rules)
- * was not available when this was written. Flagged as an assumption,
- * same treatment as ALERT_LIMITS_BY_TIER's numbers in
- * validations/alerts.ts.
+ * Which subscription tier unlocks which Managed Tier. Finalized against
+ * the existing subscription pricing (Pro NGN 20,000/mo, Elite NGN
+ * 55,000/mo — see src/lib/billing/flutterwave.ts's TIER_AMOUNT_NGN) in
+ * the absence of a separate Managed Accounts PRD: Bronze/Silver sit on
+ * top of Pro, Gold requires Elite, matching how every other
+ * higher-trust feature in this codebase (Aria, Managed Mode) is already
+ * gated to Elite only.
  */
 export const MANAGED_TIER_MIN_SUBSCRIPTION: Record<ManagedTier, SubscriptionTier> = {
   bronze: 'pro',
@@ -23,8 +25,14 @@ export function isEligibleForManagedTier(subscriptionTier: SubscriptionTier, man
 /**
  * Profit split / drawdown policy / withdrawal cadence per Managed Tier —
  * business terms, so these are server-defined constants a client can
- * never submit their own value for, not form input. Placeholder numbers
- * for the same reason as MANAGED_TIER_MIN_SUBSCRIPTION above.
+ * never submit their own value for, not form input. Finalized (no
+ * separate Managed Accounts PRD exists to source these from instead):
+ * each step up in Managed Tier requires the next subscription tier and
+ * trades VaultPoint's own cut down for more drawdown tolerance and more
+ * frequent withdrawal access, the same "pay more, get more" shape as
+ * the Pro/Elite subscription split itself. Revisit if/when Legal
+ * specifies different numbers — nothing about this shape is
+ * SEC-mandated, it's a product decision.
  */
 export const MANAGED_TIER_TERMS: Record<
   ManagedTier,
@@ -245,5 +253,9 @@ export const withdrawalRequestSchema = z.object({
   confirmUnderstanding: z.literal(true, {
     errorMap: () => ({ message: 'You must confirm you understand this withdrawal before continuing' }),
   }),
+  // Step-Up Auth Ticket 2 — the approval_id returned by a prior, already-
+  // approved POST /api/auth/step-up/initiate + /confirm for this exact
+  // account (action_type: 'withdrawal', resource_id: the account id).
+  stepUpApprovalId: z.string().trim().min(1, 'A confirmed step-up approval is required'),
 });
 export type WithdrawalRequestInput = z.infer<typeof withdrawalRequestSchema>;

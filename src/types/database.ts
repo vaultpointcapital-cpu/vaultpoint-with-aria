@@ -61,6 +61,13 @@ export type User = {
   // audit export) — set directly via Table Editor, no self-service UI
   // grants this. See 20260718000004_add_managed_accounts.sql.
   is_admin: boolean;
+  // See 20260720000000_add_email_confirmation_retry_flag.sql — signup's
+  // own Resend send (src/app/api/auth/signup/route.ts) sets this true on
+  // failure; POST /api/auth/resend-confirmation clears it on retry.
+  confirmation_email_pending_retry: boolean;
+  // Set once, the first time GET /auth/callback confirms this user's
+  // email — null means the welcome email has never been sent.
+  welcome_email_sent_at: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -155,6 +162,9 @@ export type SavingsPod = {
   currency: string;
   color: string;
   deadline: string | null;
+  // Informational reminder cadence only — no automated transfer is ever
+  // scheduled from this value. See the migration comment on this column.
+  funding_reminder: 'weekly' | 'biweekly' | 'monthly' | null;
   status: PodStatus;
   created_at: string;
   updated_at: string;
@@ -194,6 +204,14 @@ export type AlertHistoryEntry = {
   created_at: string;
 };
 
+export type UsageEvent = {
+  id: string;
+  user_id: string;
+  event_name: string;
+  properties: Record<string, unknown>;
+  created_at: string;
+};
+
 export type Subscription = {
   id: string;
   user_id: string;
@@ -213,19 +231,27 @@ export type Subscription = {
   tier: SubscriptionTier;
   status: SubscriptionStatus;
   current_period_end: string | null;
+  // When this row first entered 'past_due' (set once per decline episode,
+  // cleared to null on recovery to active/trialing). Grants a grace
+  // period before access is revoked — see get-user-tier.ts.
+  past_due_since: string | null;
   created_at: string;
   updated_at: string;
 };
 
 export type BillingWebhookEvent = {
   id: string;
-  provider: 'stripe' | 'paystack';
+  provider: 'stripe' | 'paystack' | 'flutterwave';
   event_id: string;
   event_type: string;
   // Non-sensitive metadata only — never the raw webhook payload. See
   // supabase/migrations/20260717000000_reconcile_subscriptions_for_billing.sql
   metadata: Record<string, unknown>;
   processed_at: string;
+  // 'processing' -> 'completed' | 'failed'. A retry claim only skips
+  // (true duplicate) on 'completed' — see
+  // 20260724000002_fix_webhook_idempotency_on_partial_failure.sql.
+  status: 'processing' | 'completed' | 'failed';
 };
 
 export type ProfitShareStatus = 'pending' | 'charged' | 'failed' | 'skipped';
@@ -367,6 +393,215 @@ export type ManagedAccountNotification = {
   body: string;
   read_at: string | null;
   created_at: string;
+};
+
+export type JournalEntry = {
+  id: string;
+  user_id: string;
+  note: string;
+  created_at: string;
+};
+
+// Managed Trader Pathway — a third-party trader manages ANOTHER client's
+// capital. Distinct from ManagedAccount above (VaultPoint itself manages
+// a client's own money) — the two coexist deliberately, see
+// 20260725000000_add_managed_trader_pathway.sql.
+export type ManagedTraderStatus = 'pending' | 'approved' | 'rejected' | 'suspended';
+
+export type ManagedTrader = {
+  id: string;
+  user_id: string;
+  status: ManagedTraderStatus;
+  trailing_90d_return: number | null;
+  max_drawdown: number | null;
+  academy_modules_confirmed: boolean;
+  proposed_profit_split: number;
+  approved_profit_split: number | null;
+  max_clients: number | null;
+  strategy_description: string | null;
+  has_managed_funds_before: boolean | null;
+  has_managed_funds_before_explanation: string | null;
+  understands_trade_only_confirmed_at: string | null;
+  agrees_to_audit_logging_confirmed_at: string | null;
+  reviewer_notes: string | null;
+  reviewed_by: string | null;
+  reviewed_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ManagedSubAccountStatus = 'active' | 'revoked' | 'closed';
+
+export type ManagedSubAccount = {
+  id: string;
+  trader_id: string;
+  client_user_id: string;
+  broker_connection_id: string;
+  status: ManagedSubAccountStatus;
+  allocated_amount: number;
+  profit_split_pct: number;
+  platform_fee_pct: number;
+  poa_signed_at: string | null;
+  poa_document_url: string | null;
+  poa_revoked_at: string | null;
+  disclosure_acknowledged_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ManagedAccountSettlementPayoutStatus = 'pending' | 'paid' | 'failed';
+
+export type ManagedAccountSettlement = {
+  id: string;
+  sub_account_id: string;
+  period_start: string;
+  period_end: string;
+  realized_profit: number;
+  trader_payout: number;
+  platform_fee_amount: number;
+  client_net: number;
+  payout_status: ManagedAccountSettlementPayoutStatus;
+  created_at: string;
+};
+
+export type ManagedAccountAuditEventType =
+  | 'trade_executed'
+  | 'poa_signed'
+  | 'poa_revoked'
+  | 'settlement_calculated'
+  | 'payout_sent';
+
+export type ManagedAccountAuditLogEntry = {
+  id: string;
+  sub_account_id: string;
+  event_type: ManagedAccountAuditEventType;
+  event_data: Record<string, unknown>;
+  created_at: string;
+};
+
+// Step-Up Auth, Ticket 1 — registered push-notification device tokens.
+export type DevicePlatform = 'ios' | 'android';
+
+export type UserDevice = {
+  id: string;
+  user_id: string;
+  platform: DevicePlatform;
+  encrypted_device_token: string;
+  device_token_iv: string;
+  device_token_hash: string;
+  last_seen_at: string;
+  created_at: string;
+  updated_at: string;
+};
+
+// Step-Up Auth, Ticket 2 — approval state machine + its audit trail.
+export type StepUpStatus = 'pending' | 'approved' | 'denied' | 'expired';
+export type StepUpMethod = 'push' | 'totp' | 'telegram';
+
+export type StepUpApproval = {
+  id: string;
+  user_id: string;
+  action_type: string;
+  resource_id: string | null;
+  metadata: Record<string, unknown>;
+  methods: StepUpMethod[];
+  status: StepUpStatus;
+  method: StepUpMethod | null;
+  created_at: string;
+  expires_at: string;
+  resolved_at: string | null;
+};
+
+export type StepUpAuditLogEntry = {
+  id: string;
+  approval_id: string;
+  user_id: string;
+  action_type: string;
+  resource_id: string | null;
+  status: StepUpStatus;
+  method: StepUpMethod | null;
+  created_at: string;
+};
+
+// Step-Up Auth, Ticket 6 — recognized browser fingerprints for the web
+// login flow's new-device alert.
+export type LoginDeviceFingerprint = {
+  id: string;
+  user_id: string;
+  fingerprint_hash: string;
+  user_agent: string | null;
+  first_seen_ip: string | null;
+  created_at: string;
+  last_seen_at: string;
+};
+
+// Step-Up Auth, Ticket 3 — TOTP enrollment.
+export type TotpEnrollmentStatus = 'pending' | 'active';
+
+export type TotpEnrollment = {
+  id: string;
+  user_id: string;
+  encrypted_secret: string;
+  secret_iv: string;
+  status: TotpEnrollmentStatus;
+  last_consumed_counter: number | null;
+  created_at: string;
+  activated_at: string | null;
+};
+
+// Step-Up Auth, Ticket 4 — Telegram account linking.
+export type TelegramLinkCode = {
+  id: string;
+  user_id: string;
+  code: string;
+  created_at: string;
+  expires_at: string;
+  consumed_at: string | null;
+};
+
+export type TelegramLink = {
+  id: string;
+  user_id: string;
+  chat_id: string;
+  linked_at: string;
+};
+
+export type KycVendor = 'verifyme' | 'onfido';
+export type KycVerificationState =
+  | 'not_started'
+  | 'pending'
+  | 'processing'
+  | 'verified'
+  | 'rejected'
+  | 'expired'
+  | 'error';
+
+export type KycVerification = {
+  id: string;
+  user_id: string;
+  managed_account_id: string | null;
+  vendor: KycVendor;
+  state: KycVerificationState;
+  vendor_ref: string | null;
+  // Normalized {checks_passed, reasons[]} only — see the migration's
+  // comment on why raw vendor payloads/documents never land here.
+  result_summary: Record<string, unknown> | null;
+  failure_reason: string | null;
+  submitted_at: string | null;
+  decided_at: string | null;
+  expires_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type KycWebhookEvent = {
+  id: string;
+  vendor: KycVendor;
+  event_id: string;
+  event_type: string;
+  status: 'processing' | 'completed' | 'failed';
+  normalized_payload: Record<string, unknown> | null;
+  received_at: string;
 };
 
 export type AcademyVideo = {
@@ -567,6 +802,12 @@ export interface Database {
         Update: never; // append-only
         Relationships: [];
       };
+      usage_events: {
+        Row: UsageEvent;
+        Insert: Omit<UsageEvent, 'id' | 'created_at' | 'properties'> & { properties?: Record<string, unknown> };
+        Update: never; // append-only
+        Relationships: [];
+      };
       subscriptions: {
         Row: Subscription;
         // paystack_authorization_code starts null on every insert (the
@@ -580,8 +821,8 @@ export interface Database {
       };
       billing_webhook_events: {
         Row: BillingWebhookEvent;
-        Insert: Omit<BillingWebhookEvent, 'id' | 'processed_at'>;
-        Update: never; // append-only audit log
+        Insert: Omit<BillingWebhookEvent, 'id' | 'processed_at' | 'status'> & { status?: BillingWebhookEvent['status'] };
+        Update: Pick<BillingWebhookEvent, 'status'>;
         Relationships: [];
       };
       // Written only by the profit-share billing run's service-role
@@ -631,6 +872,122 @@ export interface Database {
         Row: ManagedAccountNotification;
         Insert: Omit<ManagedAccountNotification, 'id' | 'created_at'>;
         Update: Pick<ManagedAccountNotification, 'read_at'>;
+        Relationships: [];
+      };
+      journal_entries: {
+        Row: JournalEntry;
+        Insert: Omit<JournalEntry, 'id' | 'created_at'>;
+        Update: never; // append-only, same as the Telegram bot's journal.log
+        Relationships: [];
+      };
+      managed_traders: {
+        Row: ManagedTrader;
+        // Client writes go through service-role only (see the migration's
+        // RLS comment) — the /apply route inserts via createServiceClient
+        // after validating the session, never a raw client insert.
+        Insert: Omit<ManagedTrader, 'id' | 'created_at' | 'updated_at'>;
+        Update: Partial<Omit<ManagedTrader, 'id' | 'user_id' | 'created_at'>>;
+        Relationships: [];
+      };
+      managed_sub_accounts: {
+        Row: ManagedSubAccount;
+        Insert: Omit<ManagedSubAccount, 'id' | 'created_at' | 'updated_at'>;
+        Update: Partial<Omit<ManagedSubAccount, 'id' | 'trader_id' | 'client_user_id' | 'created_at'>>;
+        Relationships: [];
+      };
+      managed_account_settlements: {
+        Row: ManagedAccountSettlement;
+        Insert: Omit<ManagedAccountSettlement, 'id' | 'created_at'>;
+        Update: Pick<ManagedAccountSettlement, 'payout_status'>;
+        Relationships: [];
+      };
+      managed_account_audit_log: {
+        Row: ManagedAccountAuditLogEntry;
+        Insert: Omit<ManagedAccountAuditLogEntry, 'id' | 'created_at'>;
+        Update: never; // append-only
+        Relationships: [];
+      };
+      user_devices: {
+        Row: UserDevice;
+        // Written only via src/lib/auth/devices.ts's service-role
+        // registerDevice() — RLS refuses client writes outright (see the
+        // migration's RLS comment).
+        Insert: Omit<UserDevice, 'id' | 'created_at' | 'updated_at'>;
+        Update: Partial<Omit<UserDevice, 'id' | 'created_at'>>;
+        Relationships: [];
+      };
+      // Written only via src/lib/auth/step-up.ts's service-role client —
+      // RLS refuses client writes outright (see the migration's RLS
+      // comment). methods is decided once at insert and never revised.
+      step_up_approvals: {
+        Row: StepUpApproval;
+        Insert: Omit<StepUpApproval, 'id' | 'created_at' | 'status' | 'method' | 'resolved_at'> & {
+          status?: StepUpStatus;
+          method?: StepUpMethod | null;
+          resolved_at?: string | null;
+        };
+        Update: never;
+        Relationships: [];
+      };
+      step_up_audit_log: {
+        Row: StepUpAuditLogEntry;
+        Insert: Omit<StepUpAuditLogEntry, 'id' | 'created_at'>;
+        Update: never; // append-only
+        Relationships: [];
+      };
+      // Written only via src/lib/auth/login-alerts.ts's service-role
+      // client — RLS refuses client writes outright (see the migration's
+      // RLS comment).
+      login_device_fingerprints: {
+        Row: LoginDeviceFingerprint;
+        Insert: Omit<LoginDeviceFingerprint, 'id' | 'created_at' | 'last_seen_at'> & {
+          last_seen_at?: string;
+        };
+        Update: Pick<LoginDeviceFingerprint, 'last_seen_at'>;
+        Relationships: [];
+      };
+      // Written only via src/lib/auth/totp-enrollment.ts's service-role
+      // client — RLS refuses client writes outright.
+      totp_enrollments: {
+        Row: TotpEnrollment;
+        Insert: Omit<TotpEnrollment, 'id' | 'created_at' | 'status' | 'last_consumed_counter' | 'activated_at'> & {
+          status?: TotpEnrollmentStatus;
+          last_consumed_counter?: number | null;
+          activated_at?: string | null;
+        };
+        Update: Partial<Pick<TotpEnrollment, 'encrypted_secret' | 'secret_iv' | 'status' | 'last_consumed_counter' | 'activated_at'>>;
+        Relationships: [];
+      };
+      // Written only via src/lib/auth/telegram-link.ts's service-role
+      // client — RLS refuses client writes outright.
+      telegram_link_codes: {
+        Row: TelegramLinkCode;
+        Insert: Omit<TelegramLinkCode, 'id' | 'created_at' | 'consumed_at'> & { consumed_at?: string | null };
+        Update: Pick<TelegramLinkCode, 'consumed_at'>;
+        Relationships: [];
+      };
+      telegram_links: {
+        Row: TelegramLink;
+        Insert: Omit<TelegramLink, 'id' | 'linked_at'> & { linked_at?: string };
+        Update: never;
+        Relationships: [];
+      };
+      kyc_verifications: {
+        Row: KycVerification;
+        // Only ever written via a service-role client (RLS refuses
+        // client writes outright — verified in
+        // scripts/verify-kyc-rls-tmp.mjs during this migration's shadow
+        // rehearsal). Typed with normal Insert/Update, same as
+        // billing_webhook_events, since the enforcement point is RLS,
+        // not the TS type.
+        Insert: Omit<KycVerification, 'id' | 'created_at' | 'updated_at'>;
+        Update: Partial<Omit<KycVerification, 'id' | 'user_id' | 'created_at'>>;
+        Relationships: [];
+      };
+      kyc_webhook_events: {
+        Row: KycWebhookEvent;
+        Insert: Omit<KycWebhookEvent, 'id' | 'received_at' | 'status'> & { status?: KycWebhookEvent['status'] };
+        Update: Pick<KycWebhookEvent, 'status'>;
         Relationships: [];
       };
       academy_videos: {
@@ -704,6 +1061,20 @@ export interface Database {
         Returns: {
           contribution_id: string;
           new_current_amount: number;
+        }[];
+      };
+      // supabase/migrations/20260726000002_add_step_up_approvals.sql
+      confirm_step_up_approval: {
+        Args: {
+          p_approval_id: string;
+          p_user_id: string;
+          p_decision: StepUpStatus;
+          p_method: StepUpMethod;
+        };
+        Returns: {
+          out_status: StepUpStatus;
+          out_resolved_at: string;
+          already_resolved: boolean;
         }[];
       };
     };

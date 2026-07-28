@@ -143,6 +143,30 @@ export function OnboardingWizard({ subscriptionTier: _subscriptionTier }: Onboar
     setStep('kyc');
   }
 
+  async function handleAdvanceToFunding() {
+    if (!managedAccountId) return;
+    setServerError(null);
+    setIsSubmitting(true);
+
+    const res = await fetch(`/api/managed-accounts/${managedAccountId}/advance-to-funding`, {
+      method: 'POST',
+    });
+
+    setIsSubmitting(false);
+
+    if (!res.ok) {
+      const body = await res.json().catch(() => null);
+      setServerError(
+        body?.code === 'KYC_REQUIRED'
+          ? "Your identity verification isn't complete yet — you'll be notified as soon as it clears."
+          : body?.error ?? 'Could not check your verification status. Please try again.'
+      );
+      return;
+    }
+
+    setStep('funding');
+  }
+
   async function handleFundingSubmit() {
     if (!managedAccountId) return;
     setServerError(null);
@@ -329,7 +353,7 @@ export function OnboardingWizard({ subscriptionTier: _subscriptionTier }: Onboar
             manual review step — you&apos;ll be notified once it&apos;s complete, and you can then
             fund your account.
           </p>
-          <Button variant="outline" onClick={() => setStep('funding')}>
+          <Button variant="outline" onClick={handleAdvanceToFunding} isLoading={isSubmitting}>
             I&apos;ve been notified my KYC is verified — continue to funding
           </Button>
         </div>

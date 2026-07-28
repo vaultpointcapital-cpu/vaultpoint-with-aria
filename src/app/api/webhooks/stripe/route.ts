@@ -2,7 +2,8 @@ import { type NextRequest, NextResponse } from 'next/server';
 import type Stripe from 'stripe';
 import { createServiceClient } from '@/lib/supabase/server';
 import { getStripeClient, tierFromStripePriceId } from '@/lib/billing/stripe';
-import { recordWebhookEventIfNew } from '@/lib/billing/webhook-log';
+import { syncUserSubscriptionTier } from '@/lib/billing/get-user-tier';
+import { claimWebhookEventForProcessing, markWebhookEventCompleted, markWebhookEventFailed } from '@/lib/billing/webhook-log';
 
 // Next.js App Router route handlers never auto-parse the body (unlike the
 // Pages Router's api routes), so request.text() below already gives the
@@ -47,14 +48,16 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Invalid signature' }, { status: 400 });
   }
 
-  const isNew = await recordWebhookEventIfNew({
+  const claim = await claimWebhookEventForProcessing({
     provider: 'stripe',
     eventId: event.id,
     eventType: event.type,
     metadata: { objectId: (event.data.object as { id?: string }).id ?? null },
   });
-  if (!isNew) {
-    // Same event id retried — already applied, ack without reprocessing.
+  if (!claim.shouldProcess) {
+    // Same event id retried, and the prior attempt already completed —
+    // ack without reprocessing. (A retry of an attempt that never
+    // finished is NOT treated as a duplicate — see claimWebhookEventForProcessing.)
     return NextResponse.json({ received: true, duplicate: true });
   }
 
@@ -74,7 +77,7 @@ export async function POST(request: NextRequest) {
         const item = subscription.items.data[0];
         const tier = item ? tierFromStripePriceId(item.price.id) : null;
 
-        await supabase.from('subscriptions').insert({
+        const { error: insertError } = await supabase.from('subscriptions').insert({
           user_id: userId,
           payment_provider: 'stripe',
           provider_subscription_id: subscriptionId,
@@ -82,7 +85,10 @@ export async function POST(request: NextRequest) {
           tier: tier ?? 'pro',
           status: mapStripeStatus(subscription.status),
           current_period_end: item ? toIsoString(item.current_period_end) : null,
+          past_due_since: null,
         });
+        if (insertError) throw insertError;
+        await syncUserSubscriptionTier(supabase, userId);
         break;
       }
 
@@ -90,24 +96,43 @@ export async function POST(request: NextRequest) {
         const subscription = event.data.object as Stripe.Subscription;
         const item = subscription.items.data[0];
         const tier = item ? tierFromStripePriceId(item.price.id) : null;
+        const newStatus = mapStripeStatus(subscription.status);
 
-        await supabase
+        const { data: updated, error } = await supabase
           .from('subscriptions')
           .update({
-            status: mapStripeStatus(subscription.status),
+            status: newStatus,
             current_period_end: item ? toIsoString(item.current_period_end) : null,
             ...(tier ? { tier } : {}),
+            // Recovery (back to active/trialing) clears the grace-period
+            // clock. Entering/staying past_due via this event is left
+            // alone here — invoice.payment_failed is the authoritative
+            // signal for starting the clock, so it isn't reset by every
+            // unrelated customer.subscription.updated delivery.
+            ...(newStatus === 'active' || newStatus === 'trialing' ? { past_due_since: null } : {}),
           })
-          .eq('provider_subscription_id', subscription.id);
+          .eq('provider_subscription_id', subscription.id)
+          .select('user_id');
+        if (error) throw error;
+
+        for (const row of updated ?? []) {
+          await syncUserSubscriptionTier(supabase, row.user_id);
+        }
         break;
       }
 
       case 'customer.subscription.deleted': {
         const subscription = event.data.object as Stripe.Subscription;
-        await supabase
+        const { data: updated, error } = await supabase
           .from('subscriptions')
           .update({ status: 'cancelled' })
-          .eq('provider_subscription_id', subscription.id);
+          .eq('provider_subscription_id', subscription.id)
+          .select('user_id');
+        if (error) throw error;
+
+        for (const row of updated ?? []) {
+          await syncUserSubscriptionTier(supabase, row.user_id);
+        }
         break;
       }
 
@@ -117,10 +142,26 @@ export async function POST(request: NextRequest) {
         const subscriptionId = typeof subscriptionRef === 'string' ? subscriptionRef : subscriptionRef?.id;
         const customerId = typeof invoice.customer === 'string' ? invoice.customer : invoice.customer?.id;
 
-        if (subscriptionId) {
-          await supabase.from('subscriptions').update({ status: 'past_due' }).eq('provider_subscription_id', subscriptionId);
-        } else if (customerId) {
-          await supabase.from('subscriptions').update({ status: 'past_due' }).eq('provider_customer_id', customerId);
+        // Select first (not a blind update) so past_due_since is only set
+        // the FIRST time a row enters past_due — a retried/second decline
+        // for the same outage must not push the grace-period clock forward.
+        const selectResult = subscriptionId
+          ? await supabase.from('subscriptions').select('id, user_id, status').eq('provider_subscription_id', subscriptionId)
+          : customerId
+            ? await supabase.from('subscriptions').select('id, user_id, status').eq('provider_customer_id', customerId)
+            : { data: [], error: null };
+        if (selectResult.error) throw selectResult.error;
+
+        for (const row of selectResult.data ?? []) {
+          const { error } = await supabase
+            .from('subscriptions')
+            .update({
+              status: 'past_due',
+              ...(row.status !== 'past_due' ? { past_due_since: new Date().toISOString() } : {}),
+            })
+            .eq('id', row.id);
+          if (error) throw error;
+          await syncUserSubscriptionTier(supabase, row.user_id);
         }
         break;
       }
@@ -132,8 +173,10 @@ export async function POST(request: NextRequest) {
     }
   } catch (err) {
     console.error('Stripe webhook processing error:', err instanceof Error ? err.message : err);
+    await markWebhookEventFailed(claim.eventRowId);
     return NextResponse.json({ error: 'Webhook processing failed' }, { status: 500 });
   }
 
+  await markWebhookEventCompleted(claim.eventRowId);
   return NextResponse.json({ received: true });
 }

@@ -20,7 +20,8 @@ export type ApiErrorCode =
   | 'BROKER_SYNC_ERROR'
   | 'PAYMENT_ERROR'
   | 'INTERNAL_ERROR'
-  | 'RATE_LIMITED';
+  | 'RATE_LIMITED'
+  | 'KYC_REQUIRED';
 
 const STATUS_BY_CODE: Record<ApiErrorCode, number> = {
   UNAUTHORIZED: 401,
@@ -32,6 +33,7 @@ const STATUS_BY_CODE: Record<ApiErrorCode, number> = {
   PAYMENT_ERROR: 502,
   INTERNAL_ERROR: 500,
   RATE_LIMITED: 429,
+  KYC_REQUIRED: 403,
 };
 
 export function apiError(

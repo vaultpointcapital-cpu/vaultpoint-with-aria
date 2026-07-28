@@ -131,7 +131,7 @@ export function OnboardingChecklist({
                           e.stopPropagation();
                           setExpandedHelpStepId(isHelpExpanded ? null : step.id);
                         }}
-                        className="mt-1 text-xs font-medium text-accent hover:underline"
+                        className="mt-1 text-xs font-medium text-accent-light hover:underline"
                       >
                         {isHelpExpanded ? 'Hide' : "What's this?"}
                       </button>

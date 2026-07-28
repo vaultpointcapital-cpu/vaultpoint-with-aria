@@ -1,0 +1,43 @@
+name: Post-deploy smoke test
+
+# Fires on GitHub's generic deployment_status event, which the Vercel
+# GitHub integration populates automatically when a deployment finishes
+# — no Vercel-specific action or token needed here, just react to the
+# status it already reports. Only acts on a successful deployment; a
+# failed/errored one has nothing to smoke-test.
+#
+# Scoped to Production only: Vercel's GitHub integration fires this same
+# event for every PR preview deployment too (environment: "Preview"),
+# and preview URLs sit behind Vercel's own deployment-protection auth
+# wall — curl gets a 302 to a login page, not the app, which isn't a
+# real health-check failure. Verified via the GitHub API that Vercel
+# reports environment as exactly "Production" / "Preview" (checked
+# repos/.../deployments) before matching on it here.
+on:
+  deployment_status:
+
+jobs:
+  smoke-test:
+    if: github.event.deployment_status.state == 'success' && github.event.deployment.environment == 'Production'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check Next.js /api/health
+        run: |
+          url="${{ github.event.deployment_status.target_url }}/api/health"
+          echo "Checking $url"
+          status=$(curl -sS -o /tmp/health.json -w "%{http_code}" "$url")
+          cat /tmp/health.json
+          if [ "$status" != "200" ]; then
+            echo "::error::Next.js /api/health returned $status"
+            exit 1
+          fi
+
+      - name: Check Railway broker-sync /health
+        if: vars.BROKER_SYNC_HEALTH_URL != ''
+        run: |
+          status=$(curl -sS -o /tmp/broker-health.json -w "%{http_code}" "${{ vars.BROKER_SYNC_HEALTH_URL }}")
+          cat /tmp/broker-health.json
+          if [ "$status" != "200" ]; then
+            echo "::error::broker-sync /health returned $status"
+            exit 1
+          fi

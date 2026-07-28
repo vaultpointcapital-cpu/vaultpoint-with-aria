@@ -17,8 +17,19 @@ import { apiError, apiSuccess } from '@/lib/utils/api-response';
  * custom header) means adding a vercel.json cron entry later needs no
  * extra plumbing — Vercel sends this header automatically for scheduled
  * invocations of routes that expect it.
+ *
+ * Exported as GET because Vercel Cron always triggers via GET (POST is
+ * kept too, for manual/scripted triggers using the same auth scheme).
  */
+export async function GET(request: NextRequest) {
+  return runProfitShareBilling(request);
+}
+
 export async function POST(request: NextRequest) {
+  return runProfitShareBilling(request);
+}
+
+async function runProfitShareBilling(request: NextRequest) {
   const cronSecret = process.env.CRON_SECRET;
   const authHeader = request.headers.get('authorization');
 

@@ -10,10 +10,15 @@
  */
 
 /**
- * Percent of Aria-attributed profit charged as the monthly true-up.
- * Not specified anywhere in the spec text available to this build —
- * flagged as an assumption the same way ALERT_LIMITS_BY_TIER's numbers
- * are in src/lib/validations/alerts.ts, not silently picked as final.
+ * Percent of Aria-attributed profit charged as the monthly true-up for
+ * Managed Mode (Elite subscribers autonomously traded on their OWN
+ * connected broker — distinct from Managed Accounts' custodial
+ * profit_distributions, where VaultPoint holds the funds directly).
+ * Finalized at 20% — mid-point of MANAGED_TIER_TERMS' bronze/silver/gold
+ * split range (30/25/20) in src/lib/validations/managed-accounts.ts,
+ * since Managed Mode sits alongside Managed Accounts as a lighter-touch,
+ * self-custody alternative and shouldn't cost more than the most
+ * favorable Managed Accounts tier.
  */
 export const PROFIT_SHARE_PCT = 20;
 

@@ -2,6 +2,7 @@ import { type NextRequest } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 import { computeAccountStats, computeDistributionBreakdown, withdrawalRequestSchema } from '@/lib/validations/managed-accounts';
 import { createNotification } from '@/lib/managed-accounts/notifications';
+import { isStepUpApproved } from '@/lib/auth/step-up';
 import { apiError, apiSuccess } from '@/lib/utils/api-response';
 
 /**
@@ -75,7 +76,26 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
     );
   }
 
-  const { withdrawalType, payoutMethod } = parsed.data;
+  const { withdrawalType, payoutMethod, stepUpApprovalId } = parsed.data;
+
+  // Step-Up Auth Ticket 2 — highest-risk flow named explicitly in the
+  // spec. Requires a step-up approval already resolved to 'approved' for
+  // this exact user + action_type + account id; a prior initiate/confirm
+  // for a different account, or one that's merely pending/denied/expired,
+  // is rejected here. Known consequence, same as the KYC-gated funding
+  // flow: a user with neither a registered device (Ticket 1) nor an
+  // active TOTP enrollment (Ticket 3) has no way to ever produce an
+  // 'approved' one — both are opt-in, so this gate isn't satisfiable for
+  // every user until they set one up.
+  const stepUpOk = await isStepUpApproved({
+    userId: authData.user.id,
+    approvalToken: stepUpApprovalId,
+    actionType: 'withdrawal',
+    resourceId: account.id,
+  });
+  if (!stepUpOk) {
+    return apiError('VALIDATION_ERROR', 'This withdrawal requires a confirmed step-up approval.');
+  }
 
   const [tradesResult, lastDistributionResult] = await Promise.all([
     supabase.from('managed_trades').select('realized_pnl, closed_at').eq('managed_account_id', account.id),

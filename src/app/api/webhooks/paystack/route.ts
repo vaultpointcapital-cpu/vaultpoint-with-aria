@@ -1,7 +1,8 @@
 import { type NextRequest, NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabase/server';
 import { verifyPaystackSignature, tierFromPaystackPlanCode } from '@/lib/billing/paystack';
-import { recordWebhookEventIfNew } from '@/lib/billing/webhook-log';
+import { syncUserSubscriptionTier } from '@/lib/billing/get-user-tier';
+import { claimWebhookEventForProcessing, markWebhookEventCompleted, markWebhookEventFailed } from '@/lib/billing/webhook-log';
 
 // Same as the Stripe route: App Router route handlers never auto-parse
 // the body, so request.text() below is already the raw bytes Paystack
@@ -49,13 +50,13 @@ export async function POST(request: NextRequest) {
   // body, so it's already a reliable per-delivery fingerprint — using it
   // as the idempotency key catches exact-duplicate retries the same way
   // a real event id would.
-  const isNew = await recordWebhookEventIfNew({
+  const claim = await claimWebhookEventForProcessing({
     provider: 'paystack',
     eventId: signature as string,
     eventType: payload.event,
     metadata: { subscriptionCode: payload.data.subscription_code ?? payload.data.subscription?.subscription_code ?? null },
   });
-  if (!isNew) {
+  if (!claim.shouldProcess) {
     return NextResponse.json({ received: true, duplicate: true });
   }
 
@@ -86,26 +87,46 @@ export async function POST(request: NextRequest) {
           : { data: null };
 
         if (existing) {
-          await supabase
+          const { error } = await supabase
             .from('subscriptions')
             .update({
               status: 'active',
+              // A successful charge is recovery — clears any grace-period
+              // clock left over from a prior renewal decline.
+              past_due_since: null,
               ...(tier ? { tier } : {}),
               ...(authorizationCode ? { paystack_authorization_code: authorizationCode } : {}),
             })
             .eq('id', existing.id);
+          if (error) throw error;
         } else {
-          await supabase.from('subscriptions').insert({
-            user_id: userId,
-            payment_provider: 'paystack',
-            provider_subscription_id: null,
-            provider_customer_id: customerCode ?? null,
-            paystack_authorization_code: authorizationCode ?? null,
-            tier: tier ?? 'pro',
-            status: 'active',
-            current_period_end: null,
-          });
+          // upsert, not insert: the select above and this write aren't
+          // atomic, so a concurrent charge.success delivery for the same
+          // brand-new customer could land in between and also see
+          // existing === null. idx_subscriptions_provider_customer_unique
+          // (20260720000001_fix_subscriptions_race_and_drift.sql) makes
+          // that a conflict instead of a duplicate row — onConflict
+          // reconciles it the same way the "existing" branch above would,
+          // rather than erroring out and losing this event.
+          const { error } = await supabase
+            .from('subscriptions')
+            .upsert(
+              {
+                user_id: userId,
+                payment_provider: 'paystack',
+                provider_subscription_id: null,
+                provider_customer_id: customerCode ?? null,
+                paystack_authorization_code: authorizationCode ?? null,
+                tier: tier ?? 'pro',
+                status: 'active',
+                current_period_end: null,
+                past_due_since: null,
+              },
+              { onConflict: 'payment_provider,provider_customer_id' }
+            );
+          if (error) throw error;
         }
+        await syncUserSubscriptionTier(supabase, userId);
         break;
       }
 
@@ -114,14 +135,20 @@ export async function POST(request: NextRequest) {
         const subscriptionCode = payload.data.subscription_code;
         if (!customerCode || !subscriptionCode) break;
 
-        await supabase
+        const { data: updated, error } = await supabase
           .from('subscriptions')
           .update({
             provider_subscription_id: subscriptionCode,
             status: 'active',
             current_period_end: payload.data.next_payment_date ?? null,
           })
-          .eq('provider_customer_id', customerCode);
+          .eq('provider_customer_id', customerCode)
+          .select('user_id');
+        if (error) throw error;
+
+        for (const row of updated ?? []) {
+          await syncUserSubscriptionTier(supabase, row.user_id);
+        }
         break;
       }
 
@@ -129,7 +156,16 @@ export async function POST(request: NextRequest) {
         const subscriptionCode = payload.data.subscription_code;
         if (!subscriptionCode) break;
 
-        await supabase.from('subscriptions').update({ status: 'cancelled' }).eq('provider_subscription_id', subscriptionCode);
+        const { data: updated, error } = await supabase
+          .from('subscriptions')
+          .update({ status: 'cancelled' })
+          .eq('provider_subscription_id', subscriptionCode)
+          .select('user_id');
+        if (error) throw error;
+
+        for (const row of updated ?? []) {
+          await syncUserSubscriptionTier(supabase, row.user_id);
+        }
         break;
       }
 
@@ -137,10 +173,26 @@ export async function POST(request: NextRequest) {
         const subscriptionCode = payload.data.subscription?.subscription_code;
         const customerCode = payload.data.customer?.customer_code;
 
-        if (subscriptionCode) {
-          await supabase.from('subscriptions').update({ status: 'past_due' }).eq('provider_subscription_id', subscriptionCode);
-        } else if (customerCode) {
-          await supabase.from('subscriptions').update({ status: 'past_due' }).eq('provider_customer_id', customerCode);
+        // Select first (not a blind update) so past_due_since is only set
+        // the FIRST time a row enters past_due — a retried/second decline
+        // for the same outage must not push the grace-period clock forward.
+        const selectResult = subscriptionCode
+          ? await supabase.from('subscriptions').select('id, user_id, status').eq('provider_subscription_id', subscriptionCode)
+          : customerCode
+            ? await supabase.from('subscriptions').select('id, user_id, status').eq('provider_customer_id', customerCode)
+            : { data: [], error: null };
+        if (selectResult.error) throw selectResult.error;
+
+        for (const row of selectResult.data ?? []) {
+          const { error } = await supabase
+            .from('subscriptions')
+            .update({
+              status: 'past_due',
+              ...(row.status !== 'past_due' ? { past_due_since: new Date().toISOString() } : {}),
+            })
+            .eq('id', row.id);
+          if (error) throw error;
+          await syncUserSubscriptionTier(supabase, row.user_id);
         }
         break;
       }
@@ -150,8 +202,10 @@ export async function POST(request: NextRequest) {
     }
   } catch (err) {
     console.error('Paystack webhook processing error:', err instanceof Error ? err.message : err);
+    await markWebhookEventFailed(claim.eventRowId);
     return NextResponse.json({ error: 'Webhook processing failed' }, { status: 500 });
   }
 
+  await markWebhookEventCompleted(claim.eventRowId);
   return NextResponse.json({ received: true });
 }

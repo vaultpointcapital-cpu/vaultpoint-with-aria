@@ -39,7 +39,7 @@ export function StatementView({ accountId, tier, clientName, clientEmail, distri
   return (
     <div className="mx-auto max-w-2xl space-y-4 p-6">
       <div className="flex items-center justify-between print:hidden">
-        <Link href={`/dashboard/managed-accounts/${accountId}`} className="text-sm text-accent hover:underline">
+        <Link href={`/dashboard/managed-accounts/${accountId}`} className="text-sm text-accent-light hover:underline">
           ← Back to account
         </Link>
         <Button variant="outline" size="sm" onClick={() => window.print()}>

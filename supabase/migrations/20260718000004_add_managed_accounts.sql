@@ -12,12 +12,13 @@
 --  signature on step 4" -> managed_accounts_funding_requires_authorization
 -- KYC must clear before funding, same reasoning -> managed_accounts_active_requires_kyc
 --
--- Tier names ('bronze'/'silver'/'gold') and the specific numeric bounds
--- below are placeholders — the spec's own PRD Section 6 (Managed Tier
--- definitions) was not available when writing this migration. Flagged
--- the same way ALERT_LIMITS_BY_TIER's numbers are in
--- src/lib/validations/alerts.ts: an assumption to revisit, not silently
--- treated as final.
+-- Tier names ('bronze'/'silver'/'gold') stay CHECK-constrained here to a
+-- fixed set; the actual profit split / drawdown cap / withdrawal cadence
+-- numbers per tier live in application code
+-- (src/lib/validations/managed-accounts.ts's MANAGED_TIER_TERMS), not
+-- the schema — finalized against the existing Pro/Elite subscription
+-- pricing in the absence of a separate Managed Accounts PRD. See that
+-- file's comment for the reasoning.
 -- ============================================================================
 
 -- No existing admin-role concept anywhere in this schema — academy_videos'
