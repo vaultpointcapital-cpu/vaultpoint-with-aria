@@ -5,12 +5,20 @@ name: Post-deploy smoke test
 # — no Vercel-specific action or token needed here, just react to the
 # status it already reports. Only acts on a successful deployment; a
 # failed/errored one has nothing to smoke-test.
+#
+# Scoped to Production only: Vercel's GitHub integration fires this same
+# event for every PR preview deployment too (environment: "Preview"),
+# and preview URLs sit behind Vercel's own deployment-protection auth
+# wall — curl gets a 302 to a login page, not the app, which isn't a
+# real health-check failure. Verified via the GitHub API that Vercel
+# reports environment as exactly "Production" / "Preview" (checked
+# repos/.../deployments) before matching on it here.
 on:
   deployment_status:
 
 jobs:
   smoke-test:
-    if: github.event.deployment_status.state == 'success'
+    if: github.event.deployment_status.state == 'success' && github.event.deployment.environment == 'Production'
     runs-on: ubuntu-latest
     steps:
       - name: Check Next.js /api/health
