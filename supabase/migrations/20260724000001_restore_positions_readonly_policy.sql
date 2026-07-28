@@ -37,5 +37,14 @@
 
 drop policy if exists "Users manage own positions" on public.positions;
 
+-- 20260617000000_initial_schema.sql already creates positions_select_own
+-- on a fresh database; this migration's real job on a genuinely-drifted
+-- live/shadow is dropping the undocumented FOR ALL policy above. Drop
+-- first so this is idempotent either way, rather than assuming which
+-- state it's running against (a fresh sequential apply — e.g. CI's
+-- migration dry-run — has both policies present at this point, which
+-- an unconditional CREATE POLICY can't handle).
+drop policy if exists "positions_select_own" on public.positions;
+
 create policy "positions_select_own" on public.positions
   for select using (auth.uid() = user_id);
