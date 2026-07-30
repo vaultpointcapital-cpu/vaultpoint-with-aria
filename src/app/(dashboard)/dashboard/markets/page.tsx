@@ -69,7 +69,9 @@ export default async function MarketsPage() {
           <TradingViewChart symbol={defaultSymbol} />
         </div>
 
-        <div className="lg:col-span-1">{canUseAria(tier) ? <AriaChat /> : <AriaLockedState />}</div>
+        <div className="lg:col-span-1">
+          {canUseAria(tier) ? <AriaChat symbol={defaultSymbol} /> : <AriaLockedState />}
+        </div>
       </div>
     </div>
   );

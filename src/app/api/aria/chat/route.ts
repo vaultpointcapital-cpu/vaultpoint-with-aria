@@ -29,7 +29,14 @@ import type { Position, ManualAsset, SubscriptionTier } from '@/types/database';
  */
 
 const MODEL = 'claude-sonnet-5';
-const MAX_TOKENS = 1024;
+// Was 1024 — too tight once extended thinking is involved. Verified
+// empirically (Aria migration Phase 2 testing): a real SMC-analysis
+// request hit stop_reason='max_tokens' with 1193 of 1318 output tokens
+// spent on thinking alone, leaving zero room for the actual reply text.
+// 6000 was the smallest budget that reliably produced a clean
+// stop_reason='end_turn' (not truncated) for the most demanding prompt
+// this route handles (the SMC multi-timeframe analyze template).
+const MAX_TOKENS = 6000;
 // Cap tool round-trips so a single request can't spiral into an
 // unbounded number of paid web searches.
 const MAX_WEB_SEARCHES_PER_REQUEST = 3;

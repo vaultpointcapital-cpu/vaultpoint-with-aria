@@ -17,20 +17,51 @@ interface ChatMessage {
 // its own recent state back.
 const MAX_HISTORY_TURNS = 20;
 
-export function AriaChat() {
+// Matches the Telegram Aria bot's analyze_symbol() template exactly
+// (aria_bot/claude_advisor.py) — sent as a normal chat message through
+// the same /api/aria/chat backend, per the Aria migration spec's own
+// suggested pattern for structured actions ("a button that triggers the
+// same backend function"), rather than a separate route.
+function buildAnalyzePrompt(symbol: string): string {
+  // symbol comes in TradingView's EXCHANGE:PAIR format (e.g.
+  // "BINANCE:BTCUSDT") — strip the exchange prefix so the prompt reads
+  // like Telegram's raw-pair /analyze <symbol> usage, not TradingView
+  // widget syntax.
+  const pair = symbol.includes(':') ? (symbol.split(':')[1] ?? symbol) : symbol;
+  return (
+    `Give me a Smart Money Concepts (SMC) multi-timeframe analysis for ${pair}. ` +
+    `Cover: current structure (swing vs internal), any recent CHOCH, key order blocks ` +
+    `or supply/demand zones, and a scored conviction setup with entry, stop loss, ` +
+    `take profit, and R:R ratio if a valid setup exists.`
+  );
+}
+
+function displaySymbol(symbol: string): string {
+  return symbol.includes(':') ? (symbol.split(':')[1] ?? symbol) : symbol;
+}
+
+interface AriaChatProps {
+  symbol?: string;
+}
+
+export function AriaChat({ symbol }: AriaChatProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const scrollAnchorRef = useRef<HTMLDivElement>(null);
 
+  const [isJournalOpen, setIsJournalOpen] = useState(false);
+  const [journalNote, setJournalNote] = useState('');
+  const [isLoggingJournal, setIsLoggingJournal] = useState(false);
+  const [journalStatus, setJournalStatus] = useState<string | null>(null);
+
   useEffect(() => {
     scrollAnchorRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, isLoading]);
 
-  async function handleSend(e: FormEvent) {
-    e.preventDefault();
-    const trimmed = input.trim();
+  async function sendMessage(text: string) {
+    const trimmed = text.trim();
     if (!trimmed || isLoading) return;
 
     const history = messages.slice(-MAX_HISTORY_TURNS).map(({ role, content }) => ({
@@ -68,6 +99,47 @@ export function AriaChat() {
     }
   }
 
+  async function handleSend(e: FormEvent) {
+    e.preventDefault();
+    await sendMessage(input);
+  }
+
+  function handleAnalyzeClick() {
+    if (!symbol) return;
+    void sendMessage(buildAnalyzePrompt(symbol));
+  }
+
+  async function handleJournalSubmit(e: FormEvent) {
+    e.preventDefault();
+    const trimmed = journalNote.trim();
+    if (!trimmed || isLoggingJournal) return;
+
+    setIsLoggingJournal(true);
+    setJournalStatus(null);
+
+    try {
+      const res = await fetch('/api/journal', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ note: trimmed }),
+      });
+
+      if (!res.ok) {
+        const body = await res.json().catch(() => null);
+        setJournalStatus(body?.error ?? 'Could not save your note. Please try again.');
+        return;
+      }
+
+      setJournalNote('');
+      setIsJournalOpen(false);
+      setJournalStatus('📝 Logged.');
+    } catch {
+      setJournalStatus('Could not reach the journal. Check your connection and try again.');
+    } finally {
+      setIsLoggingJournal(false);
+    }
+  }
+
   return (
     <Card className="flex h-[600px] flex-col p-0">
       <CardHeader className="border-b border-border px-5 pb-4 pt-5">
@@ -82,6 +154,47 @@ export function AriaChat() {
           Aria is an AI assistant, not a licensed financial advisor. Informational only — not financial advice.
         </p>
       </CardHeader>
+
+      <div className="flex flex-wrap gap-2 border-b border-border px-5 py-3">
+        {symbol && (
+          <Button type="button" variant="outline" size="sm" onClick={handleAnalyzeClick} disabled={isLoading}>
+            Analyze {displaySymbol(symbol)}
+          </Button>
+        )}
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={() => {
+            setIsJournalOpen((open) => !open);
+            setJournalStatus(null);
+          }}
+        >
+          Log a note
+        </Button>
+      </div>
+
+      {isJournalOpen && (
+        <form onSubmit={handleJournalSubmit} className="flex gap-2 border-b border-border px-5 py-3">
+          <Input
+            value={journalNote}
+            onChange={(e) => setJournalNote(e.target.value)}
+            placeholder="Quick trade note..."
+            maxLength={1000}
+            disabled={isLoggingJournal}
+            aria-label="Journal note"
+          />
+          <Button type="submit" size="sm" isLoading={isLoggingJournal} disabled={isLoggingJournal || !journalNote.trim()}>
+            Log
+          </Button>
+        </form>
+      )}
+
+      {journalStatus && (
+        <p className="px-5 pt-2 text-xs text-text-tertiary" role="status">
+          {journalStatus}
+        </p>
+      )}
 
       <div className="flex-1 space-y-4 overflow-y-auto px-5 py-4">
         {messages.length === 0 && !isLoading && (
