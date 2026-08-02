@@ -13,11 +13,17 @@ interface PaystackWebhookPayload {
   data: {
     id?: number;
     status?: string;
+    amount?: number; // kobo — only relevant to the wallet_deposit branch below
+    currency?: string;
+    reference?: string;
     customer?: { customer_code?: string; email?: string };
     plan?: { plan_code?: string } | null;
     subscription_code?: string;
     subscription?: { subscription_code?: string } | null;
-    metadata?: { user_id?: string };
+    // purpose is set by initializePaystackDeposit() to disambiguate a
+    // wallet deposit's charge.success delivery from a subscription
+    // charge's — both fire the same event type.
+    metadata?: { user_id?: string; purpose?: string };
     next_payment_date?: string;
     // Only present on charge.success — the reusable code
     // /transaction/charge_authorization needs to bill this customer
@@ -66,8 +72,32 @@ export async function POST(request: NextRequest) {
     switch (payload.event) {
       case 'charge.success': {
         const userId = payload.data.metadata?.user_id;
-        const customerCode = payload.data.customer?.customer_code;
         if (!userId) break;
+
+        // Disambiguates a wallet deposit's charge.success from a
+        // subscription charge's — both fire this same event type. Checked
+        // first so the subscription logic below (which assumes a plan/
+        // customer_code shape) never runs against a deposit payload.
+        if (payload.data.metadata?.purpose === 'wallet_deposit') {
+          const amountKobo = payload.data.amount;
+          const reference = payload.data.reference;
+          if (amountKobo == null || !reference) break;
+
+          const { error } = await supabase.rpc('wallet_apply_transaction', {
+            p_user_id: userId,
+            p_type: 'deposit',
+            p_amount: amountKobo / 100,
+            p_currency: payload.data.currency ?? 'NGN',
+            p_provider: 'paystack',
+            p_provider_reference: reference,
+            p_idempotency_key: reference,
+            p_metadata: {},
+          });
+          if (error) throw error;
+          break;
+        }
+
+        const customerCode = payload.data.customer?.customer_code;
 
         const tier = tierFromPaystackPlanCode(payload.data.plan?.plan_code);
         // Only stored when Paystack marks it reusable — a non-reusable

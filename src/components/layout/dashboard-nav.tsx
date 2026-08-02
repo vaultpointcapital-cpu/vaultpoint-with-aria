@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
-import { LayoutGrid, TrendingUp, Target, Bell, Link2, Settings, Radar } from 'lucide-react';
+import { LayoutGrid, TrendingUp, Target, Bell, Link2, Settings, Radar, Wallet } from 'lucide-react';
 import { createClient } from '@/lib/supabase/client';
 import { cn } from '@/lib/utils/cn';
 import type { SubscriptionTier } from '@/types/database';
@@ -13,6 +13,7 @@ const NAV_ITEMS = [
   { href: '/dashboard/brokers', label: 'Brokers', icon: Link2 },
   { href: '/dashboard/signals', label: 'Signals', icon: Radar },
   { href: '/dashboard/pods', label: 'Savings Pods', icon: Target },
+  { href: '/dashboard/wallet', label: 'Wallet', icon: Wallet },
   { href: '/dashboard/alerts', label: 'Alerts', icon: Bell },
   { href: '/dashboard/settings', label: 'Settings', icon: Settings },
 ];

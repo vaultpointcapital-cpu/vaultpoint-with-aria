@@ -61,5 +61,16 @@ class Settings(BaseSettings):
     # independent tuning without touching poll/alert timing.
     managed_mode_evaluation_interval_seconds: int = 60
 
+    # Wallet reconciliation (supabase/migrations/20260802000000_add_wallet.sql).
+    # Must match the Next.js app's PAYSTACK_SECRET_KEY/STRIPE_SECRET_KEY
+    # exactly — same "read-only mirror of the Next.js app's own credentials"
+    # pattern as encryption_key above. Optional so the service still starts
+    # cleanly in a deployment that hasn't enabled the wallet feature yet;
+    # the job itself skips its cycle (logged, not a crash) if either is unset.
+    paystack_secret_key: str | None = None
+    stripe_secret_key: str | None = None
+    # Once daily by default — a nightly diff, not a live reconciliation.
+    wallet_reconciliation_interval_seconds: int = 86400
+
 
 settings = Settings()

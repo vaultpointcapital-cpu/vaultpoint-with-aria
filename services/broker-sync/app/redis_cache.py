@@ -13,6 +13,8 @@ LAST_MANAGED_MODE_EVAL_KEY = "health:last_managed_mode_evaluation"
 POLL_LOCK_KEY = "lock:poll_all_connections"
 ALERT_LOCK_KEY = "lock:evaluate_all_alerts"
 MANAGED_MODE_LOCK_KEY = "lock:evaluate_managed_mode"
+LAST_WALLET_RECONCILIATION_KEY = "health:last_wallet_reconciliation"
+WALLET_RECONCILIATION_LOCK_KEY = "lock:reconcile_wallet_transactions"
 # Safety margin above a normal cycle's expected duration. The lock is
 # explicitly released at the end of a well-behaved cycle (see
 # release_poll_lock) — this TTL only matters if a holder crashes or hangs
@@ -124,3 +126,28 @@ async def release_managed_mode_lock() -> None:
     see release_poll_lock's docstring for why."""
     redis = get_redis()
     await redis.delete(MANAGED_MODE_LOCK_KEY)
+
+
+async def record_wallet_reconciliation_heartbeat() -> None:
+    await _redis.set(LAST_WALLET_RECONCILIATION_KEY, datetime.now(UTC).isoformat())
+
+
+async def get_last_wallet_reconciliation_heartbeat() -> str | None:
+    return await _redis.get(LAST_WALLET_RECONCILIATION_KEY)
+
+
+async def acquire_wallet_reconciliation_lock() -> bool:
+    """Same reasoning as acquire_poll_lock — a distinct lock key so the
+    nightly wallet reconciliation job can never run twice concurrently
+    across overlapping deploy instances."""
+    redis = get_redis()
+    ttl = settings.wallet_reconciliation_interval_seconds + POLL_LOCK_TTL_BUFFER_SECONDS
+    acquired = await redis.set(WALLET_RECONCILIATION_LOCK_KEY, "1", nx=True, ex=ttl)
+    return bool(acquired)
+
+
+async def release_wallet_reconciliation_lock() -> None:
+    """Only ever call after acquire_wallet_reconciliation_lock() returned
+    True — see release_poll_lock's docstring for why."""
+    redis = get_redis()
+    await redis.delete(WALLET_RECONCILIATION_LOCK_KEY)

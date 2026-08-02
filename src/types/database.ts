@@ -110,8 +110,41 @@ export type BrokerConnection = {
   sync_status: SyncStatus;
   last_synced_at: string | null;
   last_error: string | null;
+  // Partner Offers v1 — 'partner_hantec' + 'simulated' together mean this
+  // connection tracks a prop-firm challenge balance, not the user's own
+  // money. See src/lib/utils/financial.ts's excludeSimulatedPositions().
+  source: 'manual' | 'partner_hantec';
+  account_type: 'live' | 'simulated';
   created_at: string;
   updated_at: string;
+};
+
+export type PartnerReferralStatus = 'clicked' | 'returned' | 'connected' | 'expired';
+
+export type PartnerOffer = {
+  id: string;
+  partner_slug: string;
+  program: string;
+  account_size_usd: number;
+  price_from_usd: number;
+  ref_url: string;
+  affiliate_code: string | null;
+  regions_allowed: string[];
+  active: boolean;
+  created_at: string;
+};
+
+export type PartnerReferral = {
+  id: string;
+  user_id: string;
+  offer_id: string;
+  state_token: string;
+  status: PartnerReferralStatus;
+  clicked_at: string;
+  returned_at: string | null;
+  connected_at: string | null;
+  broker_connection_id: string | null;
+  nudges_sent: number;
 };
 
 export type Position = {
@@ -179,6 +212,75 @@ export type PodContribution = {
   created_at: string;
 };
 
+export type WalletTxnType =
+  | 'deposit'
+  | 'withdrawal'
+  | 'pod_funding'
+  | 'prop_funding'
+  | 'prop_payout'
+  | 'fee'
+  | 'reversal';
+
+export type WalletTxnStatus = 'pending' | 'completed' | 'failed' | 'reversed';
+
+export type WalletProviderEnum = 'paystack' | 'stripe' | 'flutterwave' | 'web3' | 'internal';
+
+export type Wallet = {
+  id: string;
+  user_id: string;
+  currency: string;
+  balance_cached: number;
+  updated_at: string;
+};
+
+export type WalletTransaction = {
+  id: string;
+  wallet_id: string;
+  user_id: string;
+  type: WalletTxnType;
+  amount: number;
+  currency: string;
+  status: WalletTxnStatus;
+  provider: WalletProviderEnum;
+  provider_reference: string | null;
+  idempotency_key: string;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+};
+
+export type WithdrawalRequestStatus =
+  | 'requested'
+  | 'step_up_pending'
+  | 'approved'
+  | 'processing'
+  | 'paid'
+  | 'failed'
+  | 'rejected';
+
+export type WithdrawalRequest = {
+  id: string;
+  user_id: string;
+  wallet_transaction_id: string | null;
+  amount: number;
+  currency: string;
+  destination_type: 'bank_account' | 'mobile_money' | 'crypto_address';
+  destination_details_encrypted: string;
+  destination_details_iv: string;
+  status: WithdrawalRequestStatus;
+  step_up_verified_at: string | null;
+  requested_at: string;
+  processed_at: string | null;
+};
+
+export type WalletWeb3DepositAddress = {
+  id: string;
+  user_id: string;
+  chain: string;
+  address: string;
+  created_at: string;
+};
+
 export type Alert = {
   id: string;
   user_id: string;
@@ -241,7 +343,7 @@ export type Subscription = {
 
 export type BillingWebhookEvent = {
   id: string;
-  provider: 'stripe' | 'paystack' | 'flutterwave';
+  provider: 'stripe' | 'paystack' | 'flutterwave' | 'web3';
   event_id: string;
   event_type: string;
   // Non-sensitive metadata only — never the raw webhook payload. See
@@ -732,6 +834,8 @@ export interface Database {
           | 'managed_mode_risk_pct'
           | 'managed_mode_daily_loss_limit_pct'
           | 'managed_mode_consented_at'
+          | 'source'
+          | 'account_type'
         > & {
           metaapi_account_id?: string | null;
           metaapi_region?: string | null;
@@ -742,8 +846,28 @@ export interface Database {
           managed_mode_risk_pct?: number | null;
           managed_mode_daily_loss_limit_pct?: number | null;
           managed_mode_consented_at?: string | null;
+          // Partner Offers v1 — defaults to 'manual'/'live' at the DB level;
+          // only POST /api/brokers's Hantec-connect path ever sets these.
+          source?: 'manual' | 'partner_hantec';
+          account_type?: 'live' | 'simulated';
         };
         Update: Partial<Omit<BrokerConnection, 'id' | 'user_id'>>;
+        Relationships: [];
+      };
+      partner_offers: {
+        Row: PartnerOffer;
+        // Founder manages rows via the Table Editor / a future admin
+        // tool, not through this client — same treatment as academy_videos.
+        Insert: never;
+        Update: never;
+        Relationships: [];
+      };
+      partner_referrals: {
+        Row: PartnerReferral;
+        Insert: Omit<PartnerReferral, 'id' | 'clicked_at' | 'returned_at' | 'connected_at' | 'broker_connection_id' | 'nudges_sent' | 'status'> & {
+          status?: 'clicked';
+        };
+        Update: Partial<Omit<PartnerReferral, 'id' | 'user_id' | 'offer_id' | 'state_token'>>;
         Relationships: [];
       };
       positions: {
@@ -790,6 +914,34 @@ export interface Database {
         Row: PodContribution;
         Insert: Omit<PodContribution, 'id' | 'created_at'>;
         Update: never; // append-only
+        Relationships: [];
+      };
+      wallets: {
+        Row: Wallet;
+        // No direct insert — only ever created inside wallet_apply_transaction().
+        Insert: never;
+        Update: never;
+        Relationships: [];
+      };
+      wallet_transactions: {
+        Row: WalletTransaction;
+        // Only ever written inside wallet_apply_transaction() — no direct insert policy.
+        Insert: never;
+        Update: never; // append-only
+        Relationships: [];
+      };
+      withdrawal_requests: {
+        Row: WithdrawalRequest;
+        Insert: Omit<WithdrawalRequest, 'id' | 'wallet_transaction_id' | 'step_up_verified_at' | 'requested_at' | 'processed_at' | 'status'> & {
+          status?: 'requested';
+        };
+        Update: Partial<Omit<WithdrawalRequest, 'id' | 'user_id'>>;
+        Relationships: [];
+      };
+      wallet_web3_deposit_addresses: {
+        Row: WalletWeb3DepositAddress;
+        Insert: Omit<WalletWeb3DepositAddress, 'id' | 'created_at'>;
+        Update: never;
         Relationships: [];
       };
       alerts: {
@@ -1065,6 +1217,23 @@ export interface Database {
         Returns: {
           contribution_id: string;
           new_current_amount: number;
+        }[];
+      };
+      // supabase/migrations/20260802000000_add_wallet.sql
+      wallet_apply_transaction: {
+        Args: {
+          p_user_id: string;
+          p_type: WalletTxnType;
+          p_amount: number;
+          p_currency: string;
+          p_provider: WalletProviderEnum;
+          p_provider_reference: string;
+          p_idempotency_key: string;
+          p_metadata?: Record<string, unknown>;
+        };
+        Returns: {
+          transaction_id: string;
+          new_balance: number;
         }[];
       };
       // supabase/migrations/20260726000002_add_step_up_approvals.sql

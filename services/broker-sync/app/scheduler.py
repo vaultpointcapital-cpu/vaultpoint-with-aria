@@ -13,15 +13,19 @@ from .redis_cache import (
     acquire_alert_lock,
     acquire_managed_mode_lock,
     acquire_poll_lock,
+    acquire_wallet_reconciliation_lock,
     record_alert_evaluation_heartbeat,
     record_managed_mode_evaluation_heartbeat,
     record_poll_heartbeat,
+    record_wallet_reconciliation_heartbeat,
     release_alert_lock,
     release_managed_mode_lock,
     release_poll_lock,
+    release_wallet_reconciliation_lock,
 )
 from .supabase_client import get_service_client
 from .sync_service import BROKER_CLIENTS, sync_connection
+from .wallet_reconciliation import reconcile_wallet_transactions as _reconcile_wallet_transactions
 
 logger = logging.getLogger("broker_sync")
 scheduler = AsyncIOScheduler()
@@ -133,6 +137,30 @@ async def evaluate_managed_mode() -> None:
         await release_managed_mode_lock()
 
 
+async def reconcile_wallet_transactions() -> None:
+    """Same lock/heartbeat/logging shape as the other three jobs, for the
+    nightly wallet ledger vs. Paystack/Stripe diff — see
+    wallet_reconciliation.py for the actual comparison logic."""
+    if not await acquire_wallet_reconciliation_lock():
+        logger.info("Another instance already holds the wallet reconciliation lock — skipping this cycle.")
+        return
+
+    started_at = time.monotonic()
+    logger.info("reconcile_wallet_transactions: started")
+
+    try:
+        await _reconcile_wallet_transactions()
+        await record_wallet_reconciliation_heartbeat()
+    except Exception:
+        logger.exception("reconcile_wallet_transactions: failed")
+        sentry_sdk.capture_exception()
+        raise
+    finally:
+        duration_seconds = time.monotonic() - started_at
+        logger.info("reconcile_wallet_transactions: finished in %.2fs", duration_seconds)
+        await release_wallet_reconciliation_lock()
+
+
 def start_scheduler() -> None:
     scheduler.add_job(
         poll_all_connections,
@@ -158,11 +186,20 @@ def start_scheduler() -> None:
         next_run_time=datetime.now(),
         max_instances=1,
     )
+    scheduler.add_job(
+        reconcile_wallet_transactions,
+        "interval",
+        seconds=settings.wallet_reconciliation_interval_seconds,
+        id="reconcile_wallet_transactions",
+        next_run_time=datetime.now(),
+        max_instances=1,
+    )
     scheduler.start()
     logger.info(
         "Scheduler started — polling every %ss, evaluating alerts every %ss, "
-        "evaluating managed mode every %ss.",
+        "evaluating managed mode every %ss, reconciling wallet transactions every %ss.",
         settings.poll_interval_seconds,
         settings.alert_evaluation_interval_seconds,
         settings.managed_mode_evaluation_interval_seconds,
+        settings.wallet_reconciliation_interval_seconds,
     )

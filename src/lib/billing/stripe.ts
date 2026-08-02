@@ -44,3 +44,48 @@ export function tierFromStripePriceId(priceId: string): 'pro' | 'elite' | null {
   if (priceId === process.env.STRIPE_PRICE_ELITE) return 'elite';
   return null;
 }
+
+/**
+ * Creates a one-off PaymentIntent for a wallet deposit — unlike the
+ * subscription checkout flow, there's no Price/Plan object, just a raw
+ * amount in the smallest currency unit (cents). metadata.purpose is set to
+ * 'wallet_deposit' so the webhook's payment_intent.succeeded case (a
+ * previously-unhandled event type — no collision with the subscription
+ * event types already handled) can identify it.
+ */
+export async function createDepositPaymentIntent(params: {
+  userId: string;
+  amountCents: number;
+  currency: string;
+}): Promise<{ clientSecret: string; paymentIntentId: string }> {
+  const paymentIntent = await getStripeClient().paymentIntents.create({
+    amount: params.amountCents,
+    currency: params.currency.toLowerCase(),
+    metadata: { user_id: params.userId, purpose: 'wallet_deposit' },
+  });
+
+  if (!paymentIntent.client_secret) {
+    throw new Error('Stripe did not return a client_secret for the deposit PaymentIntent.');
+  }
+
+  return { clientSecret: paymentIntent.client_secret, paymentIntentId: paymentIntent.id };
+}
+
+/**
+ * Placeholder for a Stripe-rail wallet withdrawal payout. A real payout
+ * requires a Stripe Connected Account for the destination (Stripe has no
+ * concept of paying an arbitrary bank account without one) — this repo has
+ * no Connect integration configured yet, so this throws rather than
+ * silently no-op, until that infrastructure decision is made (same
+ * "explicitly not wired to a real rail yet" treatment as the crypto payout
+ * adapter and managed_accounts' existing manual withdrawal flow).
+ */
+export async function createStripePayout(_params: {
+  amountCents: number;
+  currency: string;
+  destinationDetails: Record<string, string>;
+}): Promise<never> {
+  throw new Error(
+    'Stripe withdrawal payouts are not yet wired to a real rail — requires a Stripe Connected Account decision before this can execute a real payout.'
+  );
+}

@@ -136,6 +136,29 @@ export async function POST(request: NextRequest) {
         break;
       }
 
+      case 'payment_intent.succeeded': {
+        // Wallet deposits use a raw PaymentIntent (createDepositPaymentIntent
+        // in src/lib/billing/stripe.ts), not a subscription Checkout Session
+        // — this event type is otherwise unhandled in this webhook, so
+        // there's no collision with the subscription cases above.
+        const paymentIntent = event.data.object as Stripe.PaymentIntent;
+        const userId = paymentIntent.metadata?.user_id;
+        if (!userId || paymentIntent.metadata?.purpose !== 'wallet_deposit') break;
+
+        const { error } = await supabase.rpc('wallet_apply_transaction', {
+          p_user_id: userId,
+          p_type: 'deposit',
+          p_amount: paymentIntent.amount / 100,
+          p_currency: paymentIntent.currency.toUpperCase(),
+          p_provider: 'stripe',
+          p_provider_reference: paymentIntent.id,
+          p_idempotency_key: paymentIntent.id,
+          p_metadata: {},
+        });
+        if (error) throw error;
+        break;
+      }
+
       case 'invoice.payment_failed': {
         const invoice = event.data.object as Stripe.Invoice;
         const subscriptionRef = invoice.parent?.subscription_details?.subscription;

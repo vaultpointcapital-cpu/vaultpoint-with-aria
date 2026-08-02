@@ -27,7 +27,7 @@ export type WebhookClaimResult =
  * reprocesses instead of silently no-oping.
  */
 export async function claimWebhookEventForProcessing(params: {
-  provider: 'stripe' | 'paystack' | 'flutterwave';
+  provider: 'stripe' | 'paystack' | 'flutterwave' | 'web3';
   eventId: string;
   eventType: string;
   metadata: Record<string, unknown>;
