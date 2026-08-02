@@ -295,7 +295,7 @@ def _upsert_portfolio_snapshot(supabase, user_id: str) -> None:
 
     positions_result = (
         supabase.table("positions")
-        .select("size, mark_price, entry_price, broker_connections(broker)")
+        .select("size, mark_price, entry_price, broker_connections(broker, account_type)")
         .eq("user_id", user_id)
         .execute()
     )
@@ -304,11 +304,20 @@ def _upsert_portfolio_snapshot(supabase, user_id: str) -> None:
     crypto_value = 0.0
     forex_value = 0.0
     for p in positions_result.data:
-        value = calculate_position_value(p["mark_price"], p["entry_price"], p["size"])
         broker_info = p.get("broker_connections")
         if isinstance(broker_info, list):
             broker_info = broker_info[0] if broker_info else None
-        broker = (broker_info or {}).get("broker")
+        broker_info = broker_info or {}
+
+        # Simulated-capital connections (Partner Offers v1 — e.g. a Hantec
+        # Instant Funding account) are not the user's own money and must
+        # never enter net worth. See financial.ts's excludeSimulatedPositions
+        # for the TypeScript-side equivalent of this same rule.
+        if broker_info.get("account_type") == "simulated":
+            continue
+
+        value = calculate_position_value(p["mark_price"], p["entry_price"], p["size"])
+        broker = broker_info.get("broker")
         if broker in CRYPTO_BROKERS:
             crypto_value += value
         else:

@@ -22,7 +22,17 @@ const BROKER_LABELS: Record<BrokerType, string> = {
   metatrader: 'MetaTrader',
 };
 
-export function AddBrokerClient() {
+interface AddBrokerClientProps {
+  /** Partner Offers v1 — /connect/hantec pre-selects and locks MetaTrader
+   * (Hantec is always MT5) rather than forking this component. */
+  lockedBroker?: BrokerType;
+  lockedAccountType?: 'live' | 'simulated';
+  vpRef?: string;
+  title?: string;
+  description?: string;
+}
+
+export function AddBrokerClient({ lockedBroker, lockedAccountType, vpRef, title, description }: AddBrokerClientProps = {}) {
   const router = useRouter();
   const [serverError, setServerError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -34,7 +44,7 @@ export function AddBrokerClient() {
     formState: { errors },
   } = useForm<AddBrokerConnectionInput>({
     resolver: zodResolver(addBrokerConnectionSchema),
-    defaultValues: { broker: 'bybit' },
+    defaultValues: { broker: lockedBroker ?? 'bybit' },
   });
 
   const broker = watch('broker');
@@ -49,7 +59,7 @@ export function AddBrokerClient() {
       const res = await fetch('/api/brokers', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(data),
+        body: JSON.stringify({ ...data, vpRef, accountType: lockedAccountType }),
       });
 
       if (!res.ok) {
@@ -91,11 +101,18 @@ export function AddBrokerClient() {
       </Link>
 
       <div>
-        <h1 className="font-display text-xl font-semibold text-text-primary">Connect a broker</h1>
+        <h1 className="font-display text-xl font-semibold text-text-primary">
+          {title ?? 'Connect a broker'}
+        </h1>
         <p className="mt-1 text-sm text-text-secondary">
-          Use a read-only API key — VaultPoint never places a trade or moves funds on a tracking-only
-          connection.
+          {description ??
+            'Use a read-only API key — VaultPoint never places a trade or moves funds on a tracking-only connection.'}
         </p>
+        {lockedAccountType === 'simulated' && (
+          <p className="mt-2 text-xs text-warning">
+            Simulated capital — not your own funds, and excluded from your net worth.
+          </p>
+        )}
       </div>
 
       <form onSubmit={handleSubmit(onSubmit, onInvalid)} className="space-y-4">
@@ -105,17 +122,21 @@ export function AddBrokerClient() {
           </div>
         )}
 
-        <div className="space-y-2">
-          <Label htmlFor="broker">Broker</Label>
-          <select id="broker" className={SELECT_CLASSNAME} {...register('broker')}>
-            {(Object.keys(BROKER_LABELS) as BrokerType[]).map((value) => (
-              <option key={value} value={value}>
-                {BROKER_LABELS[value]}
-              </option>
-            ))}
-          </select>
-          {errors.broker && <p className="text-xs text-warning">{errors.broker.message}</p>}
-        </div>
+        {lockedBroker ? (
+          <input type="hidden" {...register('broker')} />
+        ) : (
+          <div className="space-y-2">
+            <Label htmlFor="broker">Broker</Label>
+            <select id="broker" className={SELECT_CLASSNAME} {...register('broker')}>
+              {(Object.keys(BROKER_LABELS) as BrokerType[]).map((value) => (
+                <option key={value} value={value}>
+                  {BROKER_LABELS[value]}
+                </option>
+              ))}
+            </select>
+            {errors.broker && <p className="text-xs text-warning">{errors.broker.message}</p>}
+          </div>
+        )}
 
         <div className="space-y-2">
           <Label htmlFor="label">Label</Label>

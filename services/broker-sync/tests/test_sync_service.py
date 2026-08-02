@@ -548,3 +548,40 @@ async def test_sync_connection_skips_unknown_broker_string(fake_supabase, fake_c
 
     assert fake_supabase.calls == []
     assert fake_cache == []
+
+
+def test_upsert_portfolio_snapshot_excludes_simulated_positions(fake_supabase):
+    """Partner Offers v1's non-negotiable rule, Python side: a simulated
+    Hantec-style connection's balance is not the user's own money and
+    must never enter total_net_worth — same guarantee TypeScript's
+    excludeSimulatedPositions()/financial.test.ts covers for the other
+    three call sites."""
+    positions_columns = "size, mark_price, entry_price, broker_connections(broker, account_type)"
+    fake_supabase.select_responses[("portfolio_snapshots", "id")] = []
+    fake_supabase.select_responses[("positions", positions_columns)] = [
+        {
+            "size": 1,
+            "mark_price": 1000,
+            "entry_price": 900,
+            "broker_connections": {"broker": "bybit", "account_type": "live"},
+        },
+        {
+            "size": 1,
+            "mark_price": 50000,
+            "entry_price": 40000,
+            "broker_connections": {"broker": "metatrader", "account_type": "simulated"},
+        },
+    ]
+    fake_supabase.select_responses[("manual_assets", "value")] = [{"value": 500}]
+
+    sync_service._upsert_portfolio_snapshot(fake_supabase, "user-1")
+
+    inserts = fake_supabase.calls_for("portfolio_snapshots", "insert")
+    assert len(inserts) == 1
+    snapshot = inserts[0].values
+    # 1000 (live bybit position) + 500 (manual) — the 50000 simulated
+    # position must be entirely absent from every figure below.
+    assert snapshot["total_net_worth"] == 1500
+    assert snapshot["crypto_value"] == 1000
+    assert snapshot["forex_value"] == 0
+    assert snapshot["manual_assets_value"] == 500

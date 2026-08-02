@@ -9,6 +9,7 @@ import {
   calculateAllocation,
   calculatePodProgress,
   calculateMarginUtilization,
+  excludeSimulatedPositions,
 } from '@/lib/utils/financial';
 
 describe('calculatePositionPnl', () => {
@@ -169,6 +170,37 @@ describe('calculateNetWorth', () => {
     );
     // 100 + 100 + 1000 + 2000
     expect(netWorth).toBe(3200);
+  });
+
+  it('is unaffected by a simulated-capital position once excludeSimulatedPositions runs first — Partner Offers v1 non-negotiable rule', () => {
+    const livePosition = { size: 1, mark_price: 1000, entry_price: 900, broker_connections: { account_type: 'live' } };
+    const simulatedPosition = {
+      size: 1,
+      mark_price: 50000,
+      entry_price: 40000,
+      broker_connections: { account_type: 'simulated' },
+    };
+    const manualAssets = [{ value: 5000 }];
+
+    const withoutSimulated = calculateNetWorth([livePosition], manualAssets);
+    const filteredThenCalculated = calculateNetWorth(
+      excludeSimulatedPositions([livePosition, simulatedPosition]),
+      manualAssets
+    );
+
+    expect(filteredThenCalculated).toBe(withoutSimulated);
+  });
+});
+
+describe('excludeSimulatedPositions', () => {
+  it('drops positions whose connection is simulated', () => {
+    const positions = [
+      { id: '1', broker_connections: { account_type: 'live' } },
+      { id: '2', broker_connections: { account_type: 'simulated' } },
+      { id: '3', broker_connections: null },
+    ];
+    const result = excludeSimulatedPositions(positions);
+    expect(result.map((p) => p.id)).toEqual(['1', '3']);
   });
 });
 

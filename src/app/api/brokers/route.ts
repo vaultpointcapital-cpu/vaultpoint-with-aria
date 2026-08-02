@@ -1,5 +1,5 @@
 import { type NextRequest } from 'next/server';
-import { createClient } from '@/lib/supabase/server';
+import { createClient, createServiceClient } from '@/lib/supabase/server';
 import { encrypt, maskKey } from '@/lib/encryption/broker-keys';
 import { addBrokerConnectionSchema } from '@/lib/validations/broker';
 import { isStepUpApproved } from '@/lib/auth/step-up';
@@ -22,7 +22,7 @@ export async function GET() {
   const { data, error } = await supabase
     .from('broker_connections')
     .select(
-      'id, broker, label, is_read_only, trade_execution_enabled, managed_mode_enabled, managed_mode_risk_pct, managed_mode_daily_loss_limit_pct, sync_status, last_synced_at, last_error, created_at'
+      'id, broker, label, is_read_only, trade_execution_enabled, managed_mode_enabled, managed_mode_risk_pct, managed_mode_daily_loss_limit_pct, sync_status, last_synced_at, last_error, source, account_type, created_at'
     )
     .eq('user_id', authData.user.id)
     // A connection with trade history is soft-disconnected (sync_status
@@ -62,8 +62,20 @@ export async function POST(request: NextRequest) {
     return apiError('VALIDATION_ERROR', 'Invalid broker connection data.', parsed.error.flatten());
   }
 
-  const { broker, label, apiKey, apiSecret, apiPassphrase, mtLogin, mtServer, mtPlatform, mtPassword, stepUpApprovalId } =
-    parsed.data;
+  const {
+    broker,
+    label,
+    apiKey,
+    apiSecret,
+    apiPassphrase,
+    mtLogin,
+    mtServer,
+    mtPlatform,
+    mtPassword,
+    stepUpApprovalId,
+    vpRef,
+    accountType,
+  } = parsed.data;
 
   // Step-Up Auth Ticket 2 — "broker-credential-change flow", the other
   // highest-risk flow the spec names explicitly. resource_id is null: a
@@ -111,12 +123,47 @@ export async function POST(request: NextRequest) {
       mt_password_iv: encryptedMtPassword?.iv ?? null,
       is_read_only: true,
       sync_status: 'pending',
+      source: vpRef ? 'partner_hantec' : 'manual',
+      account_type: accountType ?? 'live',
     })
     .select('id, broker, label, sync_status, created_at')
     .single();
 
   if (error) {
     return apiError('INTERNAL_ERROR', 'Could not save broker connection.');
+  }
+
+  // Partner Offers v1 — best-effort referral linking. An invalid/foreign
+  // vpRef is logged and ignored rather than failing the request: the
+  // broker connection itself is the important side effect, referral
+  // attribution is secondary.
+  if (vpRef) {
+    const serviceClient = createServiceClient();
+    const { data: referral } = await serviceClient
+      .from('partner_referrals')
+      .select('id, status')
+      .eq('state_token', vpRef)
+      .eq('user_id', authData.user.id)
+      .maybeSingle();
+
+    if (referral && referral.status !== 'connected') {
+      const { error: linkError } = await serviceClient
+        .from('partner_referrals')
+        .update({ status: 'connected', connected_at: new Date().toISOString(), broker_connection_id: data.id })
+        .eq('id', referral.id);
+
+      if (linkError) {
+        console.error('[brokers] Could not link partner referral:', linkError.message);
+      } else {
+        await serviceClient.from('usage_events').insert({
+          user_id: authData.user.id,
+          event_name: 'partner_account_connected',
+          properties: { referral_id: referral.id, broker_connection_id: data.id },
+        });
+      }
+    } else if (!referral) {
+      console.error('[brokers] vpRef did not match a referral for this user:', vpRef);
+    }
   }
 
   return apiSuccess(

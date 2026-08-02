@@ -43,6 +43,13 @@ export const addBrokerConnectionSchema = z
     // (action_type: 'broker_credential_change', resource_id: null — this
     // is a new connection, there's no existing id to reference yet).
     stepUpApprovalId: z.string().trim().min(1, 'A confirmed step-up approval is required'),
+    // Partner Offers v1 — present only when this connection originates
+    // from GET /connect/hantec?vp_ref=... . An invalid/foreign token is
+    // logged and ignored by the route rather than failing the whole
+    // request (see src/app/api/brokers/route.ts) — the connection itself
+    // is the important side effect, referral attribution is secondary.
+    vpRef: z.string().trim().min(1).optional(),
+    accountType: z.enum(['live', 'simulated']).optional(),
   })
   .refine((data) => data.broker !== 'kucoin' || !!data.apiPassphrase, {
     message: 'KuCoin requires an API passphrase in addition to the key and secret',

@@ -78,10 +78,30 @@ export function calculatePositionValue(position: {
 }
 
 /**
+ * Filters out positions held in a simulated-capital connection (e.g. a
+ * Hantec Trader Instant Funding account — see Partner Offers v1,
+ * supabase/migrations/20260803000000_add_partner_offers.sql) before they
+ * ever reach calculateNetWorth/calculateTotalPnl. A simulated balance is
+ * not the user's own money; every net-worth computation in this codebase
+ * (dashboard SSR page, /api/portfolio, Aria's chat context, and the Python
+ * daily snapshot job) must run positions through this first. Not
+ * toggleable — there is no path that includes simulated positions in net
+ * worth by design.
+ */
+export function excludeSimulatedPositions<T extends { broker_connections: { account_type?: string } | null }>(
+  positions: T[]
+): T[] {
+  return positions.filter((p) => p.broker_connections?.account_type !== 'simulated');
+}
+
+/**
  * Aggregates total net worth across broker positions and manually entered
  * assets (bank, property, other). This is the single source of truth for
  * the "Total Portfolio Value" figure shown on the dashboard — never
- * recompute this inline in a component.
+ * recompute this inline in a component. Callers must pass positions
+ * already filtered through excludeSimulatedPositions() if the position
+ * shape includes a broker_connections join — this function has no DB
+ * access and cannot filter for itself.
  */
 export function calculateNetWorth(
   positions: Array<Pick<Position, 'size' | 'mark_price' | 'entry_price'>>,

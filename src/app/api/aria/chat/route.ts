@@ -8,6 +8,7 @@ import {
   calculateNetWorth,
   calculateTotalPnl,
   calculateMarginUtilization,
+  excludeSimulatedPositions,
 } from '@/lib/utils/financial';
 import { apiError, apiSuccess } from '@/lib/utils/api-response';
 import type { Position, ManualAsset, SubscriptionTier } from '@/types/database';
@@ -89,7 +90,7 @@ export async function POST(request: NextRequest) {
   const [positionsResult, manualAssetsResult] = await Promise.all([
     supabase
       .from('positions')
-      .select('*, broker_connections(broker, label)')
+      .select('*, broker_connections(broker, label, account_type)')
       .eq('user_id', authData.user.id),
     supabase.from('manual_assets').select('*').eq('user_id', authData.user.id),
   ]);
@@ -99,7 +100,7 @@ export async function POST(request: NextRequest) {
   }
 
   const positions = (positionsResult.data ?? []) as Array<
-    Position & { broker_connections: { broker: string; label: string } | null }
+    Position & { broker_connections: { broker: string; label: string; account_type: string } | null }
   >;
   const manualAssets = (manualAssetsResult.data ?? []) as ManualAsset[];
 
@@ -156,6 +157,7 @@ interface PortfolioContext {
     symbol: string;
     side: string;
     broker: string;
+    account_type: string;
     leverage: number;
     entry_price: number;
     mark_price: number;
@@ -167,12 +169,17 @@ interface PortfolioContext {
 }
 
 function buildPortfolioContext(
-  positions: Array<Position & { broker_connections: { broker: string; label: string } | null }>,
+  positions: Array<Position & { broker_connections: { broker: string; label: string; account_type: string } | null }>,
   manualAssets: ManualAsset[]
 ): PortfolioContext {
-  const netWorth = calculateNetWorth(positions, manualAssets);
-  const totalUnrealizedPnl = calculateTotalPnl(positions);
-  const totalMarginUsed = positions.reduce((sum, p) => sum + (p.margin_used ?? 0), 0);
+  // Simulated-capital positions (Partner Offers v1 — e.g. a Hantec Instant
+  // Funding account) are kept in the `positions` array below so Aria can
+  // discuss "challenge progress," but must never enter net worth, total
+  // P&L, or margin utilization — those are real-money risk figures.
+  const netWorthEligiblePositions = excludeSimulatedPositions(positions);
+  const netWorth = calculateNetWorth(netWorthEligiblePositions, manualAssets);
+  const totalUnrealizedPnl = calculateTotalPnl(netWorthEligiblePositions);
+  const totalMarginUsed = netWorthEligiblePositions.reduce((sum, p) => sum + (p.margin_used ?? 0), 0);
   const marginUtilizationPct = calculateMarginUtilization(totalMarginUsed, netWorth);
 
   const openPositions = positions
@@ -181,6 +188,7 @@ function buildPortfolioContext(
       symbol: p.symbol,
       side: p.side,
       broker: p.broker_connections?.broker ?? 'unknown',
+      account_type: p.broker_connections?.account_type ?? 'live',
       leverage: p.leverage,
       entry_price: p.entry_price,
       mark_price: p.mark_price,
@@ -240,6 +248,7 @@ Hard rules:
 - Never guarantee returns. Say "this looks promising" not "this will go up."
 - Never recommend risking more than 5% of account equity on a single trade — this matches the hard cap Managed Mode itself enforces elsewhere in this product; don't casually suggest a size the system wouldn't actually let the user execute.
 - Use Smart Money Concepts (SMC) terminology when relevant: order blocks, supply/demand zones, CHOCH (change of character), internal vs swing structure, liquidity sweeps.
+- A position with account_type: "simulated" (e.g. a Hantec Trader Instant Funding account) is prop-firm challenge capital, not the user's own money — it is already excluded from net_worth, total_unrealized_pnl, and margin_utilization_pct above. Never fold it into net worth or risk commentary, and never congratulate the user on an unrealized simulated gain — call it "challenge progress," not profit or gains.
 
 Live portfolio snapshot (JSON):
 ${JSON.stringify(portfolio)}`;

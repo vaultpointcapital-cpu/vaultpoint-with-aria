@@ -4,6 +4,7 @@ import {
   calculateNetWorth,
   calculatePositionPnl,
   calculatePositionPnlPct,
+  excludeSimulatedPositions,
 } from '@/lib/utils/financial';
 import { apiError, apiSuccess } from '@/lib/utils/api-response';
 
@@ -25,7 +26,7 @@ export async function GET() {
   const [positionsResult, manualAssetsResult, brokerConnectionsResult] = await Promise.all([
     supabase
       .from('positions')
-      .select('*, broker_connections(broker, label)')
+      .select('*, broker_connections(broker, label, account_type)')
       .eq('user_id', authData.user.id),
     supabase.from('manual_assets').select('*').eq('user_id', authData.user.id),
     supabase
@@ -60,8 +61,11 @@ export async function GET() {
       }),
     }));
 
-  const totalPnl = calculateTotalPnl(positions);
-  const netWorth = calculateNetWorth(positions, manualAssets);
+  // Simulated-capital positions (Partner Offers v1) stay in the response for
+  // the "Funded accounts" UI, but never count toward net worth/P&L totals.
+  const netWorthEligiblePositions = excludeSimulatedPositions(positions);
+  const totalPnl = calculateTotalPnl(netWorthEligiblePositions);
+  const netWorth = calculateNetWorth(netWorthEligiblePositions, manualAssets);
 
   return apiSuccess({
     netWorth,

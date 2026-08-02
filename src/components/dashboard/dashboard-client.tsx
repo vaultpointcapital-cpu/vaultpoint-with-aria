@@ -4,20 +4,25 @@ import Link from 'next/link';
 import { Link2, Target, TrendingUp, TrendingDown } from 'lucide-react';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
 import { NetWorthChart } from '@/components/dashboard/net-worth-chart';
 import { DailyVideoCard } from '@/components/dashboard/daily-video-card';
+import { OfferCard, type OfferCardData } from '@/components/offers/offer-card';
 import { formatCurrency, formatPercentage } from '@/lib/utils/cn';
 import { calculatePositionPnl, calculatePositionPnlPct, calculatePodProgress } from '@/lib/utils/financial';
 import type { Position, SavingsPod, PortfolioSnapshot, AcademyVideo } from '@/types/database';
 
+type PositionWithAccountType = Position & { broker_connections: { account_type: string } | null };
+
 interface DashboardClientProps {
   initialNetWorth: number;
   initialPnl: number;
-  initialPositions: Position[];
+  initialPositions: PositionWithAccountType[];
   initialPods: SavingsPod[];
   initialSnapshots: PortfolioSnapshot[];
   dailyVideo: AcademyVideo | null;
   hasConnectedBroker: boolean;
+  offers: OfferCardData[];
 }
 
 export function DashboardClient({
@@ -28,10 +33,18 @@ export function DashboardClient({
   initialSnapshots,
   dailyVideo,
   hasConnectedBroker,
+  offers,
 }: DashboardClientProps) {
   if (!hasConnectedBroker && initialPositions.length === 0) {
-    return <EmptyDashboardState dailyVideo={dailyVideo} />;
+    return <EmptyDashboardState dailyVideo={dailyVideo} offers={offers} />;
   }
+
+  // Simulated-capital positions (Partner Offers v1) are rendered in their
+  // own "Funded accounts" section below, never mixed into the regular
+  // Open Positions stat/list — that list's dollar figures must only ever
+  // reflect the user's own money, same rule as net worth.
+  const livePositions = initialPositions.filter((p) => p.broker_connections?.account_type !== 'simulated');
+  const simulatedPositions = initialPositions.filter((p) => p.broker_connections?.account_type === 'simulated');
 
   const isPnlPositive = initialPnl >= 0;
 
@@ -69,7 +82,7 @@ export function DashboardClient({
             Open Positions
           </p>
           <p className="mt-1 font-display text-xl font-semibold text-text-primary">
-            {initialPositions.length}
+            {livePositions.length}
           </p>
         </Card>
         <Card>
@@ -100,12 +113,12 @@ export function DashboardClient({
           <CardTitle>Open Positions</CardTitle>
         </CardHeader>
         <CardContent className="space-y-1">
-          {initialPositions.length === 0 ? (
+          {livePositions.length === 0 ? (
             <p className="py-6 text-center text-sm text-text-tertiary">
               No open positions yet. They&apos;ll appear here once your broker syncs.
             </p>
           ) : (
-            initialPositions.map((position) => {
+            livePositions.map((position) => {
               const pnl =
                 position.mark_price !== null
                   ? calculatePositionPnl({
@@ -158,6 +171,57 @@ export function DashboardClient({
         </CardContent>
       </Card>
 
+      {/* Funded accounts — simulated-capital connections (Partner Offers v1).
+          Never shown alongside real dollar P&L: challenge progress only. */}
+      {simulatedPositions.length > 0 && (
+        <Card>
+          <CardHeader className="flex-row items-center gap-2">
+            <CardTitle>Funded accounts</CardTitle>
+            <Badge>Simulated capital</Badge>
+          </CardHeader>
+          <CardContent className="space-y-1">
+            <p className="mb-2 text-xs text-text-tertiary">
+              Not your own funds — excluded from your net worth above.
+            </p>
+            {simulatedPositions.map((position) => {
+              const progress =
+                position.mark_price !== null
+                  ? calculatePositionPnl({
+                      side: position.side,
+                      size: position.size,
+                      entry_price: position.entry_price,
+                      mark_price: position.mark_price,
+                    })
+                  : null;
+
+              return (
+                <div
+                  key={position.id}
+                  className="flex items-center justify-between border-b border-border py-3 last:border-none"
+                >
+                  <div>
+                    <p className="text-sm font-semibold text-text-primary">{position.symbol}</p>
+                    <p className="text-xs text-text-tertiary">
+                      {position.side.toUpperCase()} · {position.size}
+                    </p>
+                  </div>
+                  <div className="text-right font-mono-num text-sm">
+                    {progress !== null ? (
+                      <>
+                        <p className="text-text-primary">{formatCurrency(progress)}</p>
+                        <p className="text-xs text-text-tertiary">challenge progress</p>
+                      </>
+                    ) : (
+                      <p className="text-xs text-text-tertiary">Awaiting sync...</p>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </CardContent>
+        </Card>
+      )}
+
       {/* Savings pods */}
       <Card>
         <CardHeader className="flex-row items-center justify-between">
@@ -203,7 +267,7 @@ export function DashboardClient({
   );
 }
 
-function EmptyDashboardState({ dailyVideo }: { dailyVideo: AcademyVideo | null }) {
+function EmptyDashboardState({ dailyVideo, offers }: { dailyVideo: AcademyVideo | null; offers: OfferCardData[] }) {
   return (
     <div className="flex min-h-[70vh] flex-col items-center justify-center gap-6 p-6 text-center">
       <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-accent/10">
@@ -221,6 +285,15 @@ function EmptyDashboardState({ dailyVideo }: { dailyVideo: AcademyVideo | null }
       <Button asChild>
         <Link href="/dashboard/brokers/add">Connect a broker</Link>
       </Button>
+
+      {offers.length > 0 && (
+        <div className="w-full max-w-sm text-left">
+          {offers.map((offer) => (
+            <OfferCard key={offer.id} offer={offer} />
+          ))}
+        </div>
+      )}
+
       {dailyVideo && (
         <div className="w-full max-w-xs">
           <DailyVideoCard video={dailyVideo} />

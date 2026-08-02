@@ -3,6 +3,10 @@
     {
       "path": "/api/billing/profit-share/run",
       "schedule": "0 6 1 * *"
+    },
+    {
+      "path": "/api/offers/cron/process",
+      "schedule": "0 */6 * * *"
     }
   ]
 }
