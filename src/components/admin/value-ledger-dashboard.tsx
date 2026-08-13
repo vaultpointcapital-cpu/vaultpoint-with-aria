@@ -6,7 +6,7 @@ import { cn } from '@/lib/utils/cn';
 import type { ValueLedgerRollup } from '@/types/database';
 
 interface RollupRow extends ValueLedgerRollup {
-  users: { full_name: string | null; academy_student: boolean } | null;
+  user: { id: string; full_name: string | null; academy_student: boolean } | null;
 }
 
 interface FunnelEntry {
@@ -144,8 +144,8 @@ export function ValueLedgerDashboard({ rows, rollupDate, funnel }: ValueLedgerDa
                   {sorted.map((row) => (
                     <tr key={row.id}>
                       <td className="py-2 pr-3 text-text-primary">
-                        {row.users?.full_name ?? row.user_id.slice(0, 8)}
-                        {row.users?.academy_student && (
+                        {row.user?.full_name ?? row.user_id.slice(0, 8)}
+                        {row.user?.academy_student && (
                           <span className="ml-1 text-xs text-text-tertiary">(academy)</span>
                         )}
                       </td>

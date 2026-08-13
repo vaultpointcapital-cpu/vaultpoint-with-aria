@@ -10,6 +10,16 @@ export const WALLET_LIMITS: Record<string, { min: number; max: number }> = {
   USDT: { min: 5, max: 2_000 },
 };
 
+/**
+ * Placeholder review-hold threshold for large withdrawals (VaultPoint
+ * Dashboard Wallet component spec, §6/§9 — "a compliance call, not a
+ * design call"). This is the spec's own example figure, not a real
+ * compliance-approved number — same "don't invent a real one" stance as
+ * WALLET_LIMITS above. Shown as an inline notice only; does not block
+ * the withdrawal.
+ */
+export const WITHDRAWAL_REVIEW_HOLD_THRESHOLD_NGN = 1_000_000;
+
 export function checkWalletLimit(currency: string, amount: number): { ok: true } | { ok: false; message: string } {
   const limit = WALLET_LIMITS[currency];
   if (!limit) {

@@ -14,6 +14,8 @@ from .managed_mode import evaluate_managed_mode as _evaluate_managed_mode
 from .pantheon.hermes import run_hermes_scan as _run_hermes_scan
 from .pantheon.mnemosyne import mnemosyne_daily as _mnemosyne_daily
 from .pantheon.mnemosyne import mnemosyne_weekly as _mnemosyne_weekly
+from .payout_detection import detect_withdrawal_events as _detect_withdrawal_events
+from .portfolio_risk.service import evaluate_portfolio_risk as _evaluate_portfolio_risk
 from .redis_cache import (
     acquire_alert_lock,
     acquire_decision_gate_lock,
@@ -22,7 +24,9 @@ from .redis_cache import (
     acquire_managed_mode_lock,
     acquire_mnemosyne_daily_lock,
     acquire_mnemosyne_weekly_lock,
+    acquire_payout_detection_lock,
     acquire_poll_lock,
+    acquire_portfolio_risk_lock,
     acquire_scan_lock,
     acquire_signal_scoring_lock,
     acquire_value_ledger_rollup_lock,
@@ -34,7 +38,9 @@ from .redis_cache import (
     record_managed_mode_evaluation_heartbeat,
     record_mnemosyne_daily_heartbeat,
     record_mnemosyne_weekly_heartbeat,
+    record_payout_detection_heartbeat,
     record_poll_heartbeat,
+    record_portfolio_risk_heartbeat,
     record_scan_heartbeat,
     record_signal_scoring_heartbeat,
     record_value_ledger_rollup_heartbeat,
@@ -46,7 +52,9 @@ from .redis_cache import (
     release_managed_mode_lock,
     release_mnemosyne_daily_lock,
     release_mnemosyne_weekly_lock,
+    release_payout_detection_lock,
     release_poll_lock,
+    release_portfolio_risk_lock,
     release_scan_lock,
     release_signal_scoring_lock,
     release_value_ledger_rollup_lock,
@@ -371,6 +379,34 @@ async def score_signals() -> None:
         await release_signal_scoring_lock()
 
 
+async def evaluate_portfolio_risk() -> None:
+    """Same lock/heartbeat/logging shape as the other jobs — see
+    portfolio_risk/service.py for the actual exposure aggregation +
+    circuit-breaker logic (vaultpoint-quant-trading-desk-spec.pdf §4).
+    Registered to run BEFORE evaluate_decision_gate, both in this file's
+    ordering and in start_scheduler()'s add_job calls below —
+    evaluate_decision_gate reads this job's output synchronously every
+    cycle and must never read stale-from-before-this-deploy state."""
+    if not await acquire_portfolio_risk_lock():
+        logger.info("Another instance already holds the portfolio risk lock — skipping this cycle.")
+        return
+
+    started_at = time.monotonic()
+    logger.info("evaluate_portfolio_risk: started")
+
+    try:
+        await _evaluate_portfolio_risk()
+        await record_portfolio_risk_heartbeat()
+    except Exception:
+        logger.exception("evaluate_portfolio_risk: failed")
+        sentry_sdk.capture_exception()
+        raise
+    finally:
+        duration_seconds = time.monotonic() - started_at
+        logger.info("evaluate_portfolio_risk: finished in %.2fs", duration_seconds)
+        await release_portfolio_risk_lock()
+
+
 async def evaluate_decision_gate() -> None:
     """Same lock/heartbeat/logging shape as the other jobs — see
     decision_gate/service.py for the actual per-account routing (PRD
@@ -393,6 +429,30 @@ async def evaluate_decision_gate() -> None:
         duration_seconds = time.monotonic() - started_at
         logger.info("evaluate_decision_gate: finished in %.2fs", duration_seconds)
         await release_decision_gate_lock()
+
+
+async def detect_withdrawal_events() -> None:
+    """Same lock/heartbeat/logging shape as the other jobs — see
+    payout_detection.py for the actual balance-snapshot diff + heuristic
+    (Automated Profit-Split Payout Calculation spec, section 3.1)."""
+    if not await acquire_payout_detection_lock():
+        logger.info("Another instance already holds the payout detection lock — skipping this cycle.")
+        return
+
+    started_at = time.monotonic()
+    logger.info("detect_withdrawal_events: started")
+
+    try:
+        await _detect_withdrawal_events()
+        await record_payout_detection_heartbeat()
+    except Exception:
+        logger.exception("detect_withdrawal_events: failed")
+        sentry_sdk.capture_exception()
+        raise
+    finally:
+        duration_seconds = time.monotonic() - started_at
+        logger.info("detect_withdrawal_events: finished in %.2fs", duration_seconds)
+        await release_payout_detection_lock()
 
 
 def start_scheduler() -> None:
@@ -486,10 +546,26 @@ def start_scheduler() -> None:
         max_instances=1,
     )
     scheduler.add_job(
+        evaluate_portfolio_risk,
+        "interval",
+        seconds=settings.portfolio_risk_interval_seconds,
+        id="evaluate_portfolio_risk",
+        next_run_time=datetime.now(),
+        max_instances=1,
+    )
+    scheduler.add_job(
         evaluate_decision_gate,
         "interval",
         seconds=settings.decision_gate_interval_seconds,
         id="evaluate_decision_gate",
+        next_run_time=datetime.now(),
+        max_instances=1,
+    )
+    scheduler.add_job(
+        detect_withdrawal_events,
+        "interval",
+        seconds=settings.payout_detection_interval_seconds,
+        id="detect_withdrawal_events",
         next_run_time=datetime.now(),
         max_instances=1,
     )
@@ -499,7 +575,8 @@ def start_scheduler() -> None:
         "evaluating managed mode every %ss, reconciling wallet transactions every %ss, "
         "refreshing FX rates every %ss, scanning Hermes opportunities every %ss, "
         "Mnemosyne daily at 00:00 and weekly Monday 00:05, scanning SMC setups every %ss, "
-        "scoring signals every %ss, evaluating the decision gate every %ss.",
+        "scoring signals every %ss, evaluating portfolio risk every %ss, "
+        "evaluating the decision gate every %ss, detecting withdrawal events every %ss.",
         settings.poll_interval_seconds,
         settings.alert_evaluation_interval_seconds,
         settings.managed_mode_evaluation_interval_seconds,
@@ -508,5 +585,7 @@ def start_scheduler() -> None:
         settings.hermes_scan_interval_seconds,
         settings.scanner_interval_seconds,
         settings.signal_engine_interval_seconds,
+        settings.portfolio_risk_interval_seconds,
         settings.decision_gate_interval_seconds,
+        settings.payout_detection_interval_seconds,
     )

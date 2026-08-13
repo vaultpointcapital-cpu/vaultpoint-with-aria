@@ -126,5 +126,28 @@ class Settings(BaseSettings):
     decision_gate_daily_loss_limit_pct: float = 10.0
     decision_gate_cooldown_hours: float = 24.0
 
+    # Automated Profit-Split Payout Calculation (app/payout_detection.py).
+    # Same cadence as the main poll by default — balance snapshots are
+    # cheap (one get_balance() call per prop-funded connection) and
+    # withdrawal detection benefits from catching a drop as close to when
+    # it happened as the underlying poll cycle allows.
+    payout_detection_interval_seconds: int = 60
+
+    # Portfolio Risk Aggregator (app/portfolio_risk/) — per
+    # vaultpoint-quant-trading-desk-spec.pdf §4. Must run at least as
+    # often as decision_gate_interval_seconds: Decision Gate reads this
+    # job's output synchronously every cycle, so a slower cadence here
+    # would gate new auto-trades against stale exposure/circuit-breaker
+    # state for up to a full extra Decision Gate cycle.
+    portfolio_risk_interval_seconds: int = 60
+    # Max % of a book's baseline equity that may be net-exposed to any
+    # single currency/asset cluster before new auto-trades into that
+    # cluster are blocked (not a hard portfolio-wide cap — per-currency).
+    portfolio_risk_concentration_cap_pct: float = 25.0
+    # The PRD's own example figure — a book-level monthly drawdown past
+    # this (against a baseline captured once per calendar month, held
+    # until manually cleared) trips the circuit breaker.
+    portfolio_risk_monthly_drawdown_circuit_breaker_pct: float = 8.0
+
 
 settings = Settings()

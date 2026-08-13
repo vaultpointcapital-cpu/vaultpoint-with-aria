@@ -1,6 +1,8 @@
 'use client';
 
+import { useEffect, useState } from 'react';
 import Link from 'next/link';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { Link2, Target, TrendingUp, TrendingDown } from 'lucide-react';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -8,9 +10,11 @@ import { Badge } from '@/components/ui/badge';
 import { NetWorthChart } from '@/components/dashboard/net-worth-chart';
 import { DailyVideoCard } from '@/components/dashboard/daily-video-card';
 import { OfferCard, type OfferCardData } from '@/components/offers/offer-card';
+import { WalletCard } from '@/components/dashboard/wallet-card';
 import { formatMoneyJSON, formatPercentage } from '@/lib/utils/cn';
 import type { MoneyJSON } from '@/lib/money';
-import type { PortfolioSnapshot, AcademyVideo } from '@/types/database';
+import type { PortfolioSnapshot, AcademyVideo, KycTier, KycTierLimits, Wallet, WalletTxnType, WalletTxnStatus } from '@/types/database';
+import type { WalletProvider } from '@/lib/wallet/routing';
 
 /**
  * Money & Currency Layer: decimal.js/Money only ever runs server-side —
@@ -45,6 +49,23 @@ export interface DisplayFundedAccount {
   value: MoneyJSON | null;
 }
 
+/** Dashboard Wallet Card data — see wallet-card.tsx. Computed server-side
+ * in dashboard/page.tsx (Money & Currency Layer: this client component
+ * only ever receives already-computed MoneyJSON, same as every other
+ * prop here). */
+export interface DashboardWallet {
+  error: boolean;
+  currency: string;
+  balance: MoneyJSON | null;
+  pendingAmount: MoneyJSON | null;
+  hasAnyWallet: boolean;
+  wallets: Pick<Wallet, 'currency' | 'balance_cached' | 'updated_at'>[];
+  lastTransaction: { type: WalletTxnType; amount: MoneyJSON; status: WalletTxnStatus } | null;
+  lastUsedRail: { currency: string; provider: WalletProvider };
+  kycTier: KycTier;
+  kycLimits: KycTierLimits | null;
+}
+
 interface DashboardClientProps {
   initialNetWorth: MoneyJSON;
   initialPnl: MoneyJSON;
@@ -57,6 +78,41 @@ interface DashboardClientProps {
   dailyVideo: AcademyVideo | null;
   hasConnectedBroker: boolean;
   offers: OfferCardData[];
+  wallet: DashboardWallet;
+}
+
+/**
+ * Handles the return trip from a Paystack deposit redirect
+ * (deposit/initiate/route.ts's callbackUrl -> /dashboard?deposit=success).
+ * Deliberately does NOT use the spec's confirmed-success copy ("₦X added
+ * to your wallet") here — landing back from Paystack only means the user
+ * completed the checkout, not that the webhook has confirmed it yet (see
+ * dashboard/page.tsx's note on wallet_apply_transaction always writing
+ * status='completed' synchronously on webhook receipt, which may not have
+ * landed the instant the browser redirects back). One router.refresh() on
+ * mount picks it up if it already has.
+ */
+function useDepositReturnBanner() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const [visible, setVisible] = useState(false);
+
+  useEffect(() => {
+    if (searchParams.get('deposit') !== 'success') return;
+    setVisible(true);
+    router.refresh();
+    router.replace('/dashboard');
+    const timeout = setTimeout(() => setVisible(false), 4000);
+    return () => clearTimeout(timeout);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  if (!visible) return null;
+  return (
+    <div className="rounded-lg border border-info/30 bg-info/10 px-4 py-3 text-sm text-info">
+      Payment received — confirming your deposit…
+    </div>
+  );
 }
 
 export function DashboardClient({
@@ -71,15 +127,22 @@ export function DashboardClient({
   dailyVideo,
   hasConnectedBroker,
   offers,
+  wallet,
 }: DashboardClientProps) {
+  const depositReturnBanner = useDepositReturnBanner();
+
   if (!hasConnectedBroker && totalPositionCount === 0) {
-    return <EmptyDashboardState dailyVideo={dailyVideo} offers={offers} />;
+    return <EmptyDashboardState dailyVideo={dailyVideo} offers={offers} wallet={wallet} />;
   }
 
   const isPnlPositive = Number(initialPnl.amount) >= 0;
 
   return (
     <div className="mx-auto max-w-5xl space-y-5 p-6">
+      {depositReturnBanner}
+
+      <WalletCard wallet={wallet} />
+
       {/* Hero net worth card */}
       <Card className="relative overflow-hidden">
         <div className="pointer-events-none absolute -right-10 -top-16 h-72 w-72 rounded-full bg-accent/10 blur-3xl" />
@@ -267,9 +330,21 @@ export function DashboardClient({
   );
 }
 
-function EmptyDashboardState({ dailyVideo, offers }: { dailyVideo: AcademyVideo | null; offers: OfferCardData[] }) {
+function EmptyDashboardState({
+  dailyVideo,
+  offers,
+  wallet,
+}: {
+  dailyVideo: AcademyVideo | null;
+  offers: OfferCardData[];
+  wallet: DashboardWallet;
+}) {
   return (
     <div className="flex min-h-[70vh] flex-col items-center justify-center gap-6 p-6 text-center">
+      <div className="w-full max-w-sm">
+        <WalletCard wallet={wallet} compact />
+      </div>
+
       <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-accent/10">
         <Link2 className="h-7 w-7 text-accent" />
       </div>

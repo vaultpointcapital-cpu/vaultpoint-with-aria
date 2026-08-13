@@ -4,10 +4,12 @@ import { useEffect, useRef, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { withdrawRequestSchema, type WithdrawRequestInput } from '@/lib/validations/wallet';
+import { WITHDRAWAL_REVIEW_HOLD_THRESHOLD_NGN } from '@/lib/wallet/limits';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
+import { formatMoneyJSON } from '@/lib/utils/cn';
 import type { Wallet } from '@/types/database';
 
 const DESTINATION_TYPE_BY_CURRENCY: Record<string, WithdrawRequestInput['destinationType']> = {
@@ -25,7 +27,7 @@ interface WithdrawDialogProps {
 }
 
 type StepUpMethod = 'push' | 'totp' | 'telegram';
-type Stage = 'form' | 'step-up' | 'done';
+type Stage = 'form' | 'confirm' | 'step-up' | 'done';
 
 export function WithdrawDialog({ open, onOpenChange, wallets, onWithdrawn, onKycBlocked }: WithdrawDialogProps) {
   const [stage, setStage] = useState<Stage>('form');
@@ -42,15 +44,20 @@ export function WithdrawDialog({ open, onOpenChange, wallets, onWithdrawn, onKyc
     register,
     handleSubmit,
     watch,
+    setValue,
     reset,
     formState: { errors },
   } = useForm<WithdrawRequestInput>({
     resolver: zodResolver(withdrawRequestSchema),
+    mode: 'onChange',
     defaultValues: { currency: 'NGN', destinationType: 'bank_account', destinationDetails: {} },
   });
 
   const currency = watch('currency');
+  const watchedAmount = watch('amount');
   const destinationType = DESTINATION_TYPE_BY_CURRENCY[currency] ?? 'bank_account';
+  const selectedWallet = wallets.find((w) => w.currency === currency);
+  const showReviewHold = currency === 'NGN' && Number(watchedAmount) > WITHDRAWAL_REVIEW_HOLD_THRESHOLD_NGN;
 
   useEffect(() => {
     return () => {
@@ -71,6 +78,10 @@ export function WithdrawDialog({ open, onOpenChange, wallets, onWithdrawn, onKyc
       if (pollRef.current) clearInterval(pollRef.current);
     }
     onOpenChange(next);
+  }
+
+  function onContinue() {
+    setStage('confirm');
   }
 
   async function onSubmit(data: WithdrawRequestInput) {
@@ -160,7 +171,7 @@ export function WithdrawDialog({ open, onOpenChange, wallets, onWithdrawn, onKyc
 
   return (
     <Dialog open={open} onOpenChange={close}>
-      <DialogContent>
+      <DialogContent mobileSheet>
         <DialogHeader>
           <DialogTitle>Withdraw</DialogTitle>
           <DialogDescription>Move funds out of your VaultPoint wallet.</DialogDescription>
@@ -178,7 +189,7 @@ export function WithdrawDialog({ open, onOpenChange, wallets, onWithdrawn, onKyc
         )}
 
         {stage === 'form' && (
-          <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
+          <form onSubmit={handleSubmit(onContinue)} className="space-y-4">
             <div className="space-y-2">
               <Label htmlFor="currency">Currency</Label>
               <select
@@ -196,9 +207,33 @@ export function WithdrawDialog({ open, onOpenChange, wallets, onWithdrawn, onKyc
             </div>
 
             <div className="space-y-2">
-              <Label htmlFor="amount">Amount</Label>
-              <Input id="amount" type="number" step="0.01" min="0" {...register('amount')} />
+              <div className="flex items-center justify-between">
+                <Label htmlFor="amount">Amount</Label>
+                {selectedWallet && (
+                  <span className="text-xs text-text-tertiary">
+                    Available: {formatMoneyJSON({ amount: String(selectedWallet.balance_cached), currency })}
+                  </span>
+                )}
+              </div>
+              <div className="flex gap-2">
+                <Input id="amount" type="number" step="0.01" min="0" className="font-mono-num" {...register('amount')} />
+                {selectedWallet && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => setValue('amount', Number(selectedWallet.balance_cached), { shouldValidate: true })}
+                  >
+                    Max
+                  </Button>
+                )}
+              </div>
               {errors.amount && <p className="text-xs text-warning">{errors.amount.message}</p>}
+              {showReviewHold && (
+                <p className="text-xs text-warning">
+                  Withdrawals over {formatMoneyJSON({ amount: String(WITHDRAWAL_REVIEW_HOLD_THRESHOLD_NGN), currency: 'NGN' })} are
+                  reviewed within 24h.
+                </p>
+              )}
             </div>
 
             {destinationType === 'bank_account' ? (
@@ -223,10 +258,47 @@ export function WithdrawDialog({ open, onOpenChange, wallets, onWithdrawn, onKyc
               </div>
             )}
 
-            <Button type="submit" className="w-full" isLoading={isSubmitting}>
+            <Button type="submit" className="w-full">
               Continue
             </Button>
           </form>
+        )}
+
+        {stage === 'confirm' && (
+          <div className="space-y-4">
+            <div className="space-y-1 rounded-lg border border-border bg-surface-elevated p-4 text-sm">
+              <div className="flex justify-between text-text-secondary">
+                <span>Amount</span>
+                <span className="font-mono-num text-text-primary">
+                  {formatMoneyJSON({ amount: String(watchedAmount), currency })}
+                </span>
+              </div>
+              <div className="flex justify-between text-text-secondary">
+                <span>Fee</span>
+                <span className="text-text-primary">No fee</span>
+              </div>
+              <div className="flex justify-between border-t border-border pt-1 text-text-secondary">
+                <span>You&apos;ll receive</span>
+                <span className="font-mono-num text-text-primary">
+                  {formatMoneyJSON({ amount: String(watchedAmount), currency })}
+                </span>
+              </div>
+            </div>
+            {showReviewHold && (
+              <p className="text-xs text-warning">
+                Withdrawals over {formatMoneyJSON({ amount: String(WITHDRAWAL_REVIEW_HOLD_THRESHOLD_NGN), currency: 'NGN' })} are
+                reviewed within 24h.
+              </p>
+            )}
+            <div className="flex gap-2">
+              <Button variant="outline" className="flex-1" onClick={() => setStage('form')}>
+                Back
+              </Button>
+              <Button className="flex-1" isLoading={isSubmitting} onClick={handleSubmit(onSubmit)}>
+                Confirm withdrawal
+              </Button>
+            </div>
+          </div>
         )}
 
         {stage === 'step-up' && (

@@ -865,6 +865,132 @@ export type DisputeSettings = {
   updated_by: string | null;
 };
 
+// Automated Profit-Split Payout Calculation.
+// Matches supabase/migrations/20260817000000_add_prop_payout_infrastructure.sql.
+// payout_ledger/prop_firm_orders/managed_prop_accounts/audit_logs were the
+// spec's own (fictional) names — this is the real table, built net-new.
+export type SplitDirection = 'trader_first' | 'platform_first';
+
+export type PropPayoutAgreement = {
+  id: string;
+  broker_connection_id: string;
+  user_id: string;
+  funding_partner: string;
+  profit_split_pct: number;
+  split_direction: SplitDirection;
+  trader_payout_wallet_address: string | null;
+  active: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+export type AccountBalanceSnapshot = {
+  id: string;
+  broker_connection_id: string;
+  balance: number;
+  synced_at: string;
+};
+
+export type WithdrawalEventConfidence = 'auto_detected' | 'requires_manual_confirmation';
+export type WithdrawalEventStatus = 'pending' | 'confirmed' | 'rejected';
+
+export type WithdrawalEvent = {
+  id: string;
+  broker_connection_id: string;
+  user_id: string;
+  detected_amount: number;
+  balance_before: number;
+  balance_after: number;
+  detected_at: string;
+  sync_source: string;
+  confidence: WithdrawalEventConfidence;
+  status: WithdrawalEventStatus;
+  created_at: string;
+};
+
+export type PayoutCollectionMethod = 'crypto_two_step' | 'fiat_card_charge';
+export type PayoutLedgerStatus = 'pending' | 'pending_trader_execution' | 'collected' | 'disputed' | 'failed';
+
+export type PayoutLedgerEntry = {
+  id: string;
+  withdrawal_event_id: string;
+  agreement_id: string;
+  broker_connection_id: string;
+  user_id: string;
+  withdrawal_amount: number;
+  trader_amount: number;
+  vaultpoint_amount: number;
+  funding_partner_amount: number;
+  split_direction: SplitDirection;
+  collection_method: PayoutCollectionMethod;
+  status: PayoutLedgerStatus;
+  trader_wallet_address: string | null;
+  vaultpoint_wallet_address: string | null;
+  trader_marked_executed_at: string | null;
+  collected_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type PayoutCalculationAuditLogEntry = {
+  id: string;
+  withdrawal_event_id: string;
+  payout_ledger_id: string;
+  input: Record<string, unknown>;
+  output: Record<string, unknown>;
+  created_at: string;
+};
+
+export type PayoutSettings = {
+  id: 1;
+  vaultpoint_crypto_wallet_address: string | null;
+  vaultpoint_crypto_network: string | null;
+  updated_at: string;
+  updated_by: string | null;
+};
+
+// Crypto Custody (Cobo) Integration.
+// Matches supabase/migrations/20260818000001_add_crypto_custody_infrastructure.sql.
+export type CustodyProviderName = 'cobo';
+export type CustodyAccountStatus = 'active' | 'frozen' | 'closed';
+
+export type CustodyAccount = {
+  id: string;
+  user_id: string;
+  provider: CustodyProviderName;
+  provider_wallet_id: string | null;
+  deposit_address: string | null;
+  chain: string;
+  status: CustodyAccountStatus;
+  created_at: string;
+  updated_at: string;
+};
+
+export type CustodyAsset = 'USDT' | 'USDC';
+export type CustodyTransactionDirection = 'deposit' | 'withdrawal';
+export type CustodyTransactionStatus = 'pending' | 'pending_review' | 'confirmed' | 'failed';
+
+export type CustodyTransaction = {
+  id: string;
+  custody_account_id: string;
+  direction: CustodyTransactionDirection;
+  amount: number;
+  asset: CustodyAsset;
+  provider_tx_id: string | null;
+  status: CustodyTransactionStatus;
+  confirmed_at: string | null;
+  ledger_entry_id: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type CustodySettings = {
+  id: 1;
+  withdrawal_review_hold_threshold_usd: number | null;
+  updated_at: string;
+  updated_by: string | null;
+};
+
 // Step-Up Auth, Ticket 1 — registered push-notification device tokens.
 export type DevicePlatform = 'ios' | 'android';
 
@@ -1563,6 +1689,75 @@ export interface Database {
         Update: Partial<Omit<DisputeSettings, 'id' | 'updated_at'>>;
         Relationships: [];
       };
+      // Written only via each route's own service-role client after its
+      // own auth check — no client insert/update policy exists (see the
+      // migration's RLS comment). trader_payout_wallet_address is the one
+      // field the TRADER sets themselves, still routed through
+      // PUT /api/prop-payout-agreements/:id/wallet's own ownership check,
+      // never a raw client update.
+      prop_payout_agreements: {
+        Row: PropPayoutAgreement;
+        Insert: Omit<PropPayoutAgreement, 'id' | 'created_at' | 'updated_at'>;
+        Update: Partial<Omit<PropPayoutAgreement, 'id' | 'broker_connection_id' | 'user_id' | 'created_at'>>;
+        Relationships: [];
+      };
+      account_balance_snapshots: {
+        Row: AccountBalanceSnapshot;
+        Insert: Omit<AccountBalanceSnapshot, 'id'>;
+        Update: never; // append-only time series
+        Relationships: [];
+      };
+      withdrawal_events: {
+        Row: WithdrawalEvent;
+        Insert: Omit<WithdrawalEvent, 'id' | 'created_at'>;
+        Update: Pick<WithdrawalEvent, 'status'>;
+        Relationships: [];
+      };
+      // Written only by calculate_payout_split() (insert) and each
+      // collection-step route's service-role client (status transitions)
+      // — never a raw client write. prevent_collected_payout_ledger_edit()
+      // additionally blocks any UPDATE once status='collected' at the DB
+      // layer, so this Update type is a ceiling, not the only guard.
+      payout_ledger: {
+        Row: PayoutLedgerEntry;
+        Insert: never; // only ever written by calculate_payout_split()
+        Update: Partial<Pick<PayoutLedgerEntry, 'status' | 'collected_at' | 'trader_marked_executed_at'>>;
+        Relationships: [];
+      };
+      payout_calculation_audit_log: {
+        Row: PayoutCalculationAuditLogEntry;
+        Insert: never; // only ever written by calculate_payout_split()
+        Update: never; // append-only
+        Relationships: [];
+      };
+      payout_settings: {
+        Row: PayoutSettings;
+        Insert: never; // singleton row, seeded by the migration itself
+        Update: Partial<Omit<PayoutSettings, 'id' | 'updated_at'>>;
+        Relationships: [];
+      };
+      // Written only via src/lib/wallet/web3-adapter.ts (delegating to
+      // src/lib/custody/cobo-adapter.ts when COBO_INTEGRATION_ENABLED) and
+      // the admin custody-transactions review routes — no client
+      // insert/update policy exists.
+      custody_accounts: {
+        Row: CustodyAccount;
+        Insert: Omit<CustodyAccount, 'id' | 'created_at' | 'updated_at'>;
+        Update: Partial<Pick<CustodyAccount, 'provider_wallet_id' | 'deposit_address' | 'status'>>;
+        Relationships: [];
+      };
+      custody_transactions: {
+        Row: CustodyTransaction;
+        Insert: Omit<CustodyTransaction, 'id' | 'created_at' | 'updated_at'>;
+        Update: Partial<Pick<CustodyTransaction, 'status' | 'provider_tx_id' | 'confirmed_at' | 'ledger_entry_id'>>;
+        Relationships: [];
+      };
+      custody_settings: {
+        Row: CustodySettings;
+        Insert: never; // singleton row, seeded by the migration itself
+        Update: Partial<Omit<CustodySettings, 'id' | 'updated_at'>>;
+        Relationships: [];
+      };
       user_devices: {
         Row: UserDevice;
         // Written only via src/lib/auth/devices.ts's service-role
@@ -1851,6 +2046,16 @@ export interface Database {
           out_resolved_at: string;
           already_resolved: boolean;
         }[];
+      };
+      // supabase/migrations/20260817000000_add_prop_payout_infrastructure.sql
+      // Returns a single payout_ledger row (RETURNS public.payout_ledger,
+      // not SETOF) — PostgREST returns a single object for this, not an
+      // array, unlike every other Functions entry above.
+      calculate_payout_split: {
+        Args: {
+          p_withdrawal_event_id: string;
+        };
+        Returns: PayoutLedgerEntry;
       };
     };
   };

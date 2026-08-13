@@ -33,13 +33,24 @@ export default async function ValueLedgerPage() {
 
   const rollupDate = latest?.rollup_date ?? null;
 
-  const { data: rollups } = rollupDate
+  const { data: rollupRows } = rollupDate
     ? await admin
         .from('value_ledger_rollups')
-        .select('*, users(full_name, academy_student)')
+        .select('*')
         .eq('rollup_date', rollupDate)
         .order('churn_risk_score', { ascending: false })
     : { data: [] };
+
+  const userIds = [...new Set((rollupRows ?? []).map((r) => r.user_id))];
+  const { data: users } = userIds.length
+    ? await admin.from('users').select('id, full_name, academy_student').in('id', userIds)
+    : { data: [] };
+  const usersById = new Map((users ?? []).map((u) => [u.id, u]));
+
+  const rollups = (rollupRows ?? []).map((row) => ({
+    ...row,
+    user: usersById.get(row.user_id) ?? null,
+  }));
 
   // Tier-conversion funnel — computed here from raw events rather than a
   // new SQL aggregate RPC, same "compute in TS over raw rows" pattern the
@@ -62,5 +73,5 @@ export default async function ValueLedgerPage() {
     .map(([transition, count]) => ({ transition, count }))
     .sort((a, b) => b.count - a.count);
 
-  return <ValueLedgerDashboard rows={rollups ?? []} rollupDate={rollupDate} funnel={funnel} />;
+  return <ValueLedgerDashboard rows={rollups} rollupDate={rollupDate} funnel={funnel} />;
 }

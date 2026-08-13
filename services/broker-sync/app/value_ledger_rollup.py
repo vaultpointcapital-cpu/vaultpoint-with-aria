@@ -61,9 +61,10 @@ async def _get_last_sign_in_map(supabase) -> dict[str, datetime | None]:
             break
         for u in users:
             last_sign_in = getattr(u, "last_sign_in_at", None)
-            result[u.id] = (
-                datetime.fromisoformat(last_sign_in.replace("Z", "+00:00")) if isinstance(last_sign_in, str) else last_sign_in
-            )
+            if isinstance(last_sign_in, str):
+                result[u.id] = datetime.fromisoformat(last_sign_in.replace("Z", "+00:00"))
+            else:
+                result[u.id] = last_sign_in
         if len(users) < per_page:
             break
         page += 1
@@ -433,7 +434,9 @@ def _compute_value_score(
 
     if active_pods:
         progress = sum(
-            min(1.0, float(p["current_amount"]) / float(p["target_amount"])) for p in active_pods if p.get("target_amount")
+            min(1.0, float(p["current_amount"]) / float(p["target_amount"]))
+            for p in active_pods
+            if p.get("target_amount")
         ) / len(active_pods)
         components["pod_goal_progress"] = (progress, 0.20)
 

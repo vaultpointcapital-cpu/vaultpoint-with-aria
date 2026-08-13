@@ -21,6 +21,7 @@ export async function sendDisputeAlert(params: {
 
   await sendSlackAlert({
     text: `:rotating_light: ${params.summary}\n${appUrl}/dashboard/admin/disputes/${params.disputeId}`,
+    webhookUrl: process.env.SLACK_DISPUTES_WEBHOOK_URL,
     alertType: `dispute-${params.reason}`,
   });
 

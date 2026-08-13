@@ -2,31 +2,40 @@ import crypto from 'crypto';
 import { type NextRequest, NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabase/server';
 import { claimWebhookEventForProcessing, markWebhookEventCompleted, markWebhookEventFailed } from '@/lib/billing/webhook-log';
+import { getFeatureCustodyProvider } from '@/lib/custody/provider';
 
 /**
- * PLACEHOLDER — no real crypto off-ramp/custodian vendor is wired up yet
- * (see src/lib/wallet/web3-adapter.ts and the compliance flag in
- * supabase/migrations/20260802000000_add_wallet.sql). This route exists so
- * the wallet API surface is complete and testable end-to-end against a
- * mock delivery, but its payload shape and signature scheme are a
- * placeholder guess (HMAC-SHA256 over the raw body, same style as
- * Paystack), NOT verified against any real vendor's actual webhook format.
- * Replace both the payload shape and verifyWeb3Signature below once a real
- * vendor is chosen — same "not yet verified against a real delivery"
- * caveat this codebase already carries for the Flutterwave webhook.
+ * With no real provider enabled (the default — see
+ * src/lib/custody/cobo-adapter.ts's module docstring), signature
+ * verification and payload shape here are exactly the placeholder guess
+ * this route always used (HMAC-SHA256 over the raw body, same style as
+ * Paystack, via WEB3_OFFRAMP_WEBHOOK_SECRET) — kept so the wallet API
+ * surface stays testable end-to-end against a mock delivery without a
+ * real vendor. With a real provider enabled, verification delegates to
+ * CoboAdapter.verifyWebhookSignature — see that method's own docstring
+ * for why it's still unverified against a real Cobo delivery and must be
+ * fixed first if a real integration attempt shows it's wrong.
+ *
+ * User resolution never trusts a user_id field from the webhook payload
+ * — a real custody vendor has no notion of VaultPoint's internal user
+ * IDs, only the deposit address the funds arrived at. Real deposits
+ * resolve the user via custody_accounts.deposit_address; the legacy
+ * placeholder payload shape (which does carry user_id, since it's
+ * VaultPoint's own test fixture, not a real vendor's) is only accepted
+ * when no real provider is enabled.
  */
 interface Web3WebhookPayload {
   event: string; // e.g. 'deposit.confirmed'
   data: {
     id?: string;
-    user_id?: string;
+    user_id?: string; // placeholder-path only — see module docstring
     amount?: number; // in USDT, not smallest-unit — placeholder assumption
     address?: string;
     tx_hash?: string;
   };
 }
 
-function verifyWeb3Signature(rawBody: string, signatureHeader: string | null): boolean {
+function verifyPlaceholderSignature(rawBody: string, signatureHeader: string | null): boolean {
   const secret = process.env.WEB3_OFFRAMP_WEBHOOK_SECRET;
   if (!secret || !signatureHeader) return false;
 
@@ -40,9 +49,13 @@ function verifyWeb3Signature(rawBody: string, signatureHeader: string | null): b
 
 export async function POST(request: NextRequest) {
   const rawBody = await request.text();
-  const signature = request.headers.get('x-web3-signature');
+  const provider = getFeatureCustodyProvider();
 
-  if (!verifyWeb3Signature(rawBody, signature)) {
+  const verified = provider
+    ? provider.verifyWebhookSignature({ rawBody, headers: request.headers })
+    : verifyPlaceholderSignature(rawBody, request.headers.get('x-web3-signature'));
+
+  if (!verified) {
     return NextResponse.json({ error: 'Invalid signature' }, { status: 400 });
   }
 
@@ -63,20 +76,58 @@ export async function POST(request: NextRequest) {
   try {
     switch (payload.event) {
       case 'deposit.confirmed': {
-        const { user_id: userId, amount, tx_hash: txHash } = payload.data;
-        if (!userId || amount == null || !txHash) break;
+        const { amount, tx_hash: txHash, address } = payload.data;
+        if (amount == null || !txHash) break;
 
-        const { error } = await supabase.rpc('wallet_apply_transaction', {
-          p_user_id: userId,
-          p_type: 'deposit',
-          p_amount: amount,
-          p_currency: 'USDT',
-          p_provider: 'web3',
-          p_provider_reference: txHash,
-          p_idempotency_key: txHash,
-          p_metadata: { address: payload.data.address ?? null },
-        });
+        let userId = payload.data.user_id ?? null;
+        let custodyAccountId: string | null = null;
+
+        if (provider && address) {
+          const { data: account } = await supabase
+            .from('custody_accounts')
+            .select('id, user_id')
+            .eq('deposit_address', address)
+            .maybeSingle();
+          if (!account) {
+            // A confirmed deposit to an address we don't recognize is a
+            // real anomaly (reconciliation-relevant), not a silent skip —
+            // surfaced via the failed-processing path below rather than
+            // crediting no one and returning 200.
+            throw new Error(`No custody_accounts row found for deposit_address=${address}`);
+          }
+          userId = account.user_id;
+          custodyAccountId = account.id;
+        }
+
+        if (!userId) break;
+
+        const { data: rpcResult, error } = await supabase
+          .rpc('wallet_apply_transaction', {
+            p_user_id: userId,
+            p_type: 'deposit',
+            p_amount: amount,
+            p_currency: 'USDT',
+            p_provider: 'web3',
+            p_provider_reference: txHash,
+            p_idempotency_key: txHash,
+            p_metadata: { address: address ?? null },
+          })
+          .single();
         if (error) throw error;
+
+        if (custodyAccountId) {
+          const { error: custodyError } = await supabase.from('custody_transactions').insert({
+            custody_account_id: custodyAccountId,
+            direction: 'deposit',
+            amount,
+            asset: 'USDT',
+            provider_tx_id: txHash,
+            status: 'confirmed',
+            confirmed_at: new Date().toISOString(),
+            ledger_entry_id: rpcResult?.transaction_id ?? null,
+          });
+          if (custodyError) throw custodyError;
+        }
         break;
       }
 

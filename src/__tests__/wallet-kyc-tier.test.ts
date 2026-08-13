@@ -109,6 +109,11 @@ function makeFakeClient() {
         },
       };
     },
+    // value_ledger_apply_event — tier-state.ts fires this as a best-effort
+    // side effect after a tier bump; not under test here, so a no-op
+    // success response is enough to keep applyTierDecision's own
+    // assertions the focus of this file.
+    rpc: async (_fn: string, _params: Record<string, unknown>) => ({ data: null, error: null }),
   };
 }
 

@@ -30,6 +30,7 @@ import logging
 
 from ..config import settings
 from ..pantheon.dedup import upsert_finding
+from ..portfolio_risk import gate_check, scope
 from ..supabase_client import get_service_client
 from . import cooldown, step_up_client
 from .execution_adapter import get_execution_adapter
@@ -150,8 +151,24 @@ async def _route_auto(supabase, score: dict, candidate: dict, account: dict) -> 
         await _log_decision(supabase, score, account, "auto", "auto_rejected_cooldown", cooldown_active=True)
         return
 
+    # Portfolio Risk Aggregator — a book-wide account-state gate, grouped
+    # with hedging/cooldown above rather than the trade-quality checks
+    # below. Cheap: gate_check reads state portfolio_risk/service.py
+    # already computed on its own schedule, never recomputes inline here.
+    # See supabase/migrations/20260818000000_add_portfolio_risk_aggregator.sql.
+    book_type, book_scope_id = scope.resolve_book(account)
+    if await gate_check.is_circuit_breaker_tripped(supabase, book_type, book_scope_id):
+        await _log_decision(supabase, score, account, "auto", "auto_rejected_circuit_breaker")
+        return
+
     if score["confidence_score"] < settings.decision_gate_confidence_threshold:
         await _log_decision(supabase, score, account, "auto", "auto_rejected_confidence")
+        return
+
+    # Needs candidate["symbol"], so grouped with the other trade-quality
+    # checks rather than the account-state gates above.
+    if await gate_check.is_concentration_capped(supabase, book_type, book_scope_id, candidate["symbol"]):
+        await _log_decision(supabase, score, account, "auto", "auto_rejected_concentration_cap")
         return
 
     entry = (candidate["entry_zone_low"] + candidate["entry_zone_high"]) / 2

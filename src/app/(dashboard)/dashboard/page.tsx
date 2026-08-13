@@ -5,11 +5,14 @@ import { Money } from '@/lib/money';
 import { fxService, FxRateUnavailableError } from '@/lib/fx';
 import { calculateNetWorthResult } from '@/lib/valuation/networth';
 import { isOfferAvailableForRegion } from '@/lib/offers/routing';
+import { getKycTierStatus } from '@/lib/kyc/tier-state';
+import type { WalletProvider } from '@/lib/wallet/routing';
 import {
   DashboardClient,
   type DisplayPosition,
   type DisplayPod,
   type DisplayFundedAccount,
+  type DashboardWallet,
 } from '@/components/dashboard/dashboard-client';
 
 export default async function DashboardPage() {
@@ -22,8 +25,17 @@ export default async function DashboardPage() {
     return null;
   }
 
-  const [positionsResult, podsResult, brokerConnectionsResult, snapshotsResult, dailyVideoResult, profileResult, offersResult] =
-    await Promise.all([
+  const [
+    positionsResult,
+    podsResult,
+    brokerConnectionsResult,
+    snapshotsResult,
+    dailyVideoResult,
+    profileResult,
+    offersResult,
+    walletsResult,
+    walletTransactionsResult,
+  ] = await Promise.all([
       // Valuation Contract: reality is trigger-maintained on the row
       // itself now — no broker_connections join needed to know which
       // positions are the user's own money.
@@ -64,6 +76,17 @@ export default async function DashboardPage() {
         .from('partner_offers')
         .select('id, partner_slug, program, account_size_usd, price_from_usd, ref_url, affiliate_code, regions_allowed')
         .eq('active', true),
+      // Dashboard Wallet Card — see wallet-card.tsx. Only the fields the
+      // card actually renders; the full multi-currency grid still lives
+      // on /dashboard/wallet with its own SSR query.
+      supabase.from('wallets').select('id, currency, balance_cached, updated_at').eq('user_id', authData.user.id),
+      supabase
+        .from('wallet_transactions')
+        .select('id, type, amount, currency, status, provider, created_at')
+        .eq('user_id', authData.user.id)
+        .order('created_at', { ascending: false })
+        .order('id', { ascending: false })
+        .limit(20),
     ]);
 
   const positions = positionsResult.data ?? [];
@@ -82,6 +105,90 @@ export default async function DashboardPage() {
       price_from_usd: offer.price_from_usd,
       affiliate_code: offer.affiliate_code,
     }));
+
+  // Dashboard Wallet Card data — see src/components/dashboard/wallet-card.tsx.
+  // Money & Currency Layer: computed server-side into plain MoneyJSON,
+  // same convention as netWorthResult below — DashboardClient never
+  // touches Money/financial.ts directly.
+  const wallet: DashboardWallet = await (async () => {
+    if (walletsResult.error || walletTransactionsResult.error) {
+      return {
+        error: true,
+        currency: displayCurrency,
+        balance: null,
+        pendingAmount: null,
+        hasAnyWallet: false,
+        wallets: [],
+        lastTransaction: null,
+        lastUsedRail: { currency: 'NGN', provider: 'paystack' },
+        kycTier: 'tier0',
+        kycLimits: null,
+      };
+    }
+
+    const wallets = walletsResult.data ?? [];
+    const walletTransactions = walletTransactionsResult.data ?? [];
+
+    const primaryWallet =
+      wallets.find((w) => w.currency === displayCurrency) ?? wallets.find((w) => w.currency === 'NGN') ?? null;
+    const primaryCurrency = primaryWallet?.currency ?? displayCurrency;
+
+    // wallet_apply_transaction() (20260802000000_add_wallet.sql) hardcodes
+    // status='completed' on every insert — no code path writes 'pending'
+    // today, so this will compute to 0 in practice. Still derived
+    // correctly (not hardcoded to 0) since it's cheap and matches the
+    // component spec; not a bug to chase if it's ever built.
+    const pendingTotal = walletTransactions
+      .filter((t) => t.status === 'pending' && t.currency === primaryCurrency)
+      .reduce((sum, t) => sum + Number(t.amount), 0);
+
+    const lastTxn = walletTransactions[0] ?? null;
+
+    // DB provider enum ('paystack'|'stripe'|'flutterwave'|'web3'|'internal')
+    // -> app-level WalletProvider ('paystack'|'stripe'|'crypto'), the
+    // inverse of walletProviderToDbEnum() in src/lib/wallet/routing.ts.
+    const lastDeposit = walletTransactions.find((t) => t.type === 'deposit');
+    const lastUsedRail: { currency: string; provider: WalletProvider } | null = lastDeposit
+      ? {
+          currency: lastDeposit.currency,
+          provider: lastDeposit.provider === 'web3' ? 'crypto' : (lastDeposit.provider as WalletProvider),
+        }
+      : null;
+
+    let kycTier: import('@/types/database').KycTier = 'tier0';
+    let kycLimits: DashboardWallet['kycLimits'] = null;
+    try {
+      const status = await getKycTierStatus(authData.user.id);
+      kycTier = status.tier;
+      kycLimits = status.limits;
+    } catch {
+      // KYC status is non-critical for the wallet card's balance display —
+      // fall back to the most restrictive tier rather than fail the whole
+      // dashboard render.
+    }
+
+    return {
+      error: false,
+      currency: primaryCurrency,
+      balance: primaryWallet ? Money.of(String(primaryWallet.balance_cached), primaryCurrency).toJSON() : null,
+      pendingAmount: pendingTotal > 0 ? Money.of(String(pendingTotal), primaryCurrency).toJSON() : null,
+      hasAnyWallet: wallets.length > 0,
+      // Full multi-currency list — the withdraw modal keeps its existing
+      // per-currency picker (see withdraw-dialog.tsx), only the compact
+      // card's own headline number is narrowed to primaryCurrency.
+      wallets: wallets.map((w) => ({ currency: w.currency, balance_cached: w.balance_cached, updated_at: w.updated_at })),
+      lastTransaction: lastTxn
+        ? {
+            type: lastTxn.type,
+            amount: Money.of(String(lastTxn.amount), lastTxn.currency).toJSON(),
+            status: lastTxn.status,
+          }
+        : null,
+      lastUsedRail: lastUsedRail ?? { currency: 'NGN', provider: 'paystack' },
+      kycTier,
+      kycLimits,
+    };
+  })();
 
   // Valuation Contract — the one aggregator every net-worth-relevant
   // source runs through (src/lib/valuation/networth.ts). Money &
@@ -172,6 +279,7 @@ export default async function DashboardPage() {
       dailyVideo={dailyVideo}
       hasConnectedBroker={brokerConnections.length > 0}
       offers={offers}
+      wallet={wallet}
     />
   );
 }

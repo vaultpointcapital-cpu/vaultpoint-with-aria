@@ -53,6 +53,14 @@ CRYPTO_COINGECKO_IDS = {
 
 FIAT_CURRENCIES = ["NGN", "GHS", "KES", "GBP", "EUR"]
 
+# Portfolio Risk Aggregator (services/broker-sync/app/portfolio_risk/) —
+# these exist purely to price a position's non-USD currency leg to USD
+# for exposure/concentration math (e.g. a EURJPY position's JPY leg),
+# not for the wallet/Money-Layer purpose FIAT_CURRENCIES above serves.
+# XAU/XAG (gold/silver) are quoted the same way a fiat cross is (USD per
+# ounce), so they ride the same OXR fetch as everything else here.
+FX_MAJOR_CURRENCIES = ["JPY", "AUD", "CAD", "CHF", "NZD", "XAU", "XAG"]
+
 
 async def _store_rate(currency: str, rate_to_usd: str, source: str) -> None:
     supabase = get_service_client()
@@ -87,10 +95,18 @@ async def _refresh_fiat_rates() -> None:
         logger.info("fx_service: OPEN_EXCHANGE_RATES_APP_ID not set — skipping fiat leg")
         return
 
+    # FX_MAJOR_CURRENCIES rides this same fetch/store pipeline — same OXR
+    # call, same fx_rates table, same fx:{currency} Redis cache — rather
+    # than a second fetch loop. See FX_MAJOR_CURRENCIES's own comment for
+    # why these are fetched (Portfolio Risk Aggregator currency-leg
+    # pricing) even though FIAT_CURRENCIES above serves a different
+    # (wallet/Money-Layer) purpose.
+    all_currencies = FIAT_CURRENCIES + FX_MAJOR_CURRENCIES
+
     async with httpx.AsyncClient(timeout=15) as client:
         response = await client.get(
             f"{OXR_BASE_URL}/latest.json",
-            params={"app_id": settings.open_exchange_rates_app_id, "symbols": ",".join(FIAT_CURRENCIES)},
+            params={"app_id": settings.open_exchange_rates_app_id, "symbols": ",".join(all_currencies)},
         )
         response.raise_for_status()
         payload = response.json()
@@ -98,7 +114,7 @@ async def _refresh_fiat_rates() -> None:
     # OXR quotes USD -> currency (e.g. 1 USD = 1538 NGN); fx_rates stores
     # the inverse, rate_to_usd (1 unit of currency = this many USD).
     rates = payload.get("rates", {})
-    for currency in FIAT_CURRENCIES:
+    for currency in all_currencies:
         usd_to_currency = rates.get(currency)
         if not usd_to_currency:
             logger.warning("fx_service: Open Exchange Rates returned no rate for %s", currency)

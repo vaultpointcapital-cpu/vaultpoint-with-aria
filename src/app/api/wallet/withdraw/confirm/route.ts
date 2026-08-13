@@ -125,6 +125,7 @@ export async function POST(request: NextRequest) {
       payoutStatus = 'processing'; // Paystack transfers finalize asynchronously via webhook.
     } else if (rail === 'crypto') {
       await initiateCryptoPayout({
+        userId: authData.user.id,
         amount: withdrawalRequest.amount,
         destinationAddress: destinationDetails.address as string,
         reference: `wallet_withdrawal_${withdrawalRequestId}`,

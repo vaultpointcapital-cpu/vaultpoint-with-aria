@@ -210,6 +210,35 @@ async def notify_alerts_paused(alert: dict) -> None:
     logger.info("Alerts-paused notice sent: alert=%s user=%s", alert.get("id"), user_id)
 
 
+async def notify_book_circuit_breaker_tripped(user_id: str, book_label: str, drawdown_pct: float) -> None:
+    """Portfolio Risk Aggregator — a book-level drawdown circuit-breaker
+    trip isn't tied to one connection either, same reasoning as
+    notify_alerts_paused above, reused rather than inventing a third
+    delivery mechanism alongside that one and Pantheon's aria_findings
+    path. See services/broker-sync/app/portfolio_risk/service.py's
+    _trip_circuit_breaker, which calls this once per affected user.
+    """
+    message = (
+        f"VaultPoint's risk system has paused new automated trades for {book_label} — "
+        f"it has drawn down {abs(drawdown_pct):.1f}% against its monthly baseline, crossing "
+        "the configured circuit-breaker threshold. Existing open positions are not affected "
+        "by this — only new automated trades are paused — and a human review is required "
+        "before automated trading resumes for this book."
+    )
+
+    supabase = get_service_client()
+    user_result = await asyncio.to_thread(
+        lambda: supabase.table("users").select("email").eq("id", user_id).single().execute()
+    )
+    email = user_result.data.get("email") if user_result.data else None
+
+    if email and settings.resend_api_key and settings.alert_email_from:
+        await _send_email(to_email=email, subject="VaultPoint paused automated trading — review needed", message=message)
+    await _send_in_app(user_id=user_id, message=message)
+
+    logger.info("Circuit-breaker-tripped notice sent: user=%s book=%s drawdown_pct=%.2f", user_id, book_label, drawdown_pct)
+
+
 async def _set_notified_state(connection_id: str, state: str | None) -> None:
     supabase = get_service_client()
     await asyncio.to_thread(

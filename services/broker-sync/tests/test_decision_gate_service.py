@@ -141,6 +141,33 @@ class TestManualPath:
         assert fake_supabase.calls_for("decision_gate_log", "insert") == []
         assert stub_upsert_finding == []
 
+    async def test_portfolio_risk_gate_checks_never_run_on_the_manual_path(
+        self, fake_supabase, stub_manual_alert, stub_upsert_finding, monkeypatch
+    ):
+        # Manual is alert-only, no capital moves — Portfolio Risk
+        # Aggregator's checks exist to gate NEW auto-trades, so they must
+        # never even be consulted here, same posture as hedging/cooldown/
+        # confidence/sizing (all auto-path-only already).
+        circuit_breaker_calls = []
+        concentration_calls = []
+
+        async def spy_circuit_breaker(*args, **kwargs):
+            circuit_breaker_calls.append((args, kwargs))
+            return False
+
+        async def spy_concentration(*args, **kwargs):
+            concentration_calls.append((args, kwargs))
+            return False
+
+        monkeypatch.setattr(service.gate_check, "is_circuit_breaker_tripped", spy_circuit_breaker)
+        monkeypatch.setattr(service.gate_check, "is_concentration_capped", spy_concentration)
+        _seed(fake_supabase)
+
+        await service.evaluate_decision_gate()
+
+        assert circuit_breaker_calls == []
+        assert concentration_calls == []
+
 
 class TestAutoPath:
     async def test_rejected_when_hedging_not_verified(self, fake_supabase, monkeypatch):
@@ -188,6 +215,39 @@ class TestAutoPath:
 
         logs = fake_supabase.calls_for("decision_gate_log", "insert")
         assert logs[0].values["decision"] == "auto_rejected_sizing"
+
+    async def test_rejected_when_circuit_breaker_tripped(self, fake_supabase, monkeypatch):
+        # AUTO_CONNECTION has no "book" key -> scope.resolve_book treats
+        # it as self_directed, scoped by user_id — see gate_check.py.
+        fake_supabase.select_responses[("book_risk_state", "tripped")] = [{"tripped": True}]
+        _seed(fake_supabase, scores=[SCORE_AUTO_ELIGIBLE], connections=[AUTO_CONNECTION])
+        submit_calls = []
+        monkeypatch.setattr(service, "get_execution_adapter", lambda: _FakeAdapter(submit_calls))
+
+        await service.evaluate_decision_gate()
+
+        logs = fake_supabase.calls_for("decision_gate_log", "insert")
+        assert logs[0].values["decision"] == "auto_rejected_circuit_breaker"
+        assert submit_calls == []
+
+    async def test_rejected_when_concentration_capped(self, fake_supabase, monkeypatch):
+        monkeypatch.setattr(service.settings, "decision_gate_confidence_threshold", 75.0)
+        # CANDIDATE's symbol is XAUUSD -> currency legs are just XAU (USD
+        # is never itself a "concentration"). net_notional_usd here is
+        # well past the default 25% cap against a 10,000 baseline_equity.
+        fake_supabase.select_responses[("book_exposure_state", "currency_or_asset, net_notional_usd")] = [
+            {"currency_or_asset": "XAU", "net_notional_usd": 5000}
+        ]
+        fake_supabase.select_responses[("book_risk_state", "baseline_equity")] = [{"baseline_equity": 10000}]
+        _seed(fake_supabase, scores=[SCORE_AUTO_ELIGIBLE], connections=[AUTO_CONNECTION])
+        submit_calls = []
+        monkeypatch.setattr(service, "get_execution_adapter", lambda: _FakeAdapter(submit_calls))
+
+        await service.evaluate_decision_gate()
+
+        logs = fake_supabase.calls_for("decision_gate_log", "insert")
+        assert logs[0].values["decision"] == "auto_rejected_concentration_cap"
+        assert submit_calls == []
 
     async def test_clears_every_gate_and_calls_the_execution_adapter(self, fake_supabase, monkeypatch):
         monkeypatch.setattr(service.settings, "decision_gate_confidence_threshold", 75.0)

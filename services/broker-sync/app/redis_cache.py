@@ -31,6 +31,10 @@ LAST_DECISION_GATE_KEY = "health:last_decision_gate"
 DECISION_GATE_LOCK_KEY = "lock:evaluate_decision_gate"
 LAST_VALUE_LEDGER_ROLLUP_KEY = "health:last_value_ledger_rollup"
 VALUE_LEDGER_ROLLUP_LOCK_KEY = "lock:run_value_ledger_rollup"
+LAST_PAYOUT_DETECTION_KEY = "health:last_payout_detection"
+PAYOUT_DETECTION_LOCK_KEY = "lock:detect_withdrawal_events"
+LAST_PORTFOLIO_RISK_KEY = "health:last_portfolio_risk"
+PORTFOLIO_RISK_LOCK_KEY = "lock:evaluate_portfolio_risk"
 # Cron-triggered jobs (Mnemosyne) don't have a fixed "interval" setting to
 # size their lock TTL off of — a flat cap comfortably longer than either
 # job should ever take, same purpose as POLL_LOCK_TTL_BUFFER_SECONDS for
@@ -358,6 +362,58 @@ async def acquire_value_ledger_rollup_lock() -> bool:
 async def release_value_ledger_rollup_lock() -> None:
     redis = get_redis()
     await redis.delete(VALUE_LEDGER_ROLLUP_LOCK_KEY)
+
+
+async def record_payout_detection_heartbeat() -> None:
+    await _redis.set(LAST_PAYOUT_DETECTION_KEY, datetime.now(UTC).isoformat())
+
+
+async def get_last_payout_detection_heartbeat() -> str | None:
+    return await _redis.get(LAST_PAYOUT_DETECTION_KEY)
+
+
+async def acquire_payout_detection_lock() -> bool:
+    """Same reasoning as acquire_poll_lock — a distinct lock key so
+    withdrawal detection (app/payout_detection.py) can never run twice
+    concurrently across overlapping deploy instances. Double-detection
+    would mean double-counting a single withdrawal against the same prior
+    snapshot, not just a wasted cycle."""
+    redis = get_redis()
+    ttl = settings.payout_detection_interval_seconds + POLL_LOCK_TTL_BUFFER_SECONDS
+    acquired = await redis.set(PAYOUT_DETECTION_LOCK_KEY, "1", nx=True, ex=ttl)
+    return bool(acquired)
+
+
+async def release_payout_detection_lock() -> None:
+    """Only ever call after acquire_payout_detection_lock() returned True
+    — see release_poll_lock's docstring for why."""
+    redis = get_redis()
+    await redis.delete(PAYOUT_DETECTION_LOCK_KEY)
+
+
+async def record_portfolio_risk_heartbeat() -> None:
+    await _redis.set(LAST_PORTFOLIO_RISK_KEY, datetime.now(UTC).isoformat())
+
+
+async def get_last_portfolio_risk_heartbeat() -> str | None:
+    return await _redis.get(LAST_PORTFOLIO_RISK_KEY)
+
+
+async def acquire_portfolio_risk_lock() -> bool:
+    """Same reasoning as acquire_poll_lock — a distinct lock key so the
+    Portfolio Risk Aggregator's cycle can never run twice concurrently
+    across overlapping deploy instances."""
+    redis = get_redis()
+    ttl = settings.portfolio_risk_interval_seconds + POLL_LOCK_TTL_BUFFER_SECONDS
+    acquired = await redis.set(PORTFOLIO_RISK_LOCK_KEY, "1", nx=True, ex=ttl)
+    return bool(acquired)
+
+
+async def release_portfolio_risk_lock() -> None:
+    """Only ever call after acquire_portfolio_risk_lock() returned True —
+    see release_poll_lock's docstring for why."""
+    redis = get_redis()
+    await redis.delete(PORTFOLIO_RISK_LOCK_KEY)
 
 
 async def cache_fx_rate(currency: str, rate_to_usd: str, source: str, fetched_at: str) -> None:

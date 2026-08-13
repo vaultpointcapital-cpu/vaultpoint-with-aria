@@ -78,7 +78,7 @@ export async function POST(request: NextRequest) {
         userId: authData.user.id,
         amountKobo: Math.round(amount * 100),
         reference,
-        callbackUrl: `${appUrl}/dashboard/wallet?deposit=success`,
+        callbackUrl: `${appUrl}/dashboard?deposit=success`,
       });
       return apiSuccess({ provider: 'paystack', url, reference: paystackReference });
     }
@@ -92,8 +92,8 @@ export async function POST(request: NextRequest) {
       return apiSuccess({ provider: 'stripe', clientSecret, paymentIntentId });
     }
 
-    const { address, chain } = await getOrCreateDepositAddress(authData.user.id);
-    return apiSuccess({ provider: 'crypto', address, chain, expectedAmount: amount, currency });
+    const { address, chain, isPlaceholder } = await getOrCreateDepositAddress(authData.user.id);
+    return apiSuccess({ provider: 'crypto', address, chain, isPlaceholder, expectedAmount: amount, currency });
   } catch (err) {
     console.error('wallet/deposit/initiate provider error:', err);
     return apiError('PAYMENT_ERROR', 'Could not start deposit. Please try again.');
