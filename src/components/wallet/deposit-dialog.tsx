@@ -57,7 +57,7 @@ type Step = 'amount' | 'confirm' | 'processing';
 type DepositResult =
   | { provider: 'paystack'; url: string; reference: string }
   | { provider: 'stripe'; clientSecret: string; paymentIntentId: string }
-  | { provider: 'crypto'; address: string; chain: string; expectedAmount: number; currency: string };
+  | { provider: 'crypto'; address: string; chain: string; isPlaceholder: boolean; expectedAmount: number; currency: string };
 
 function railFor(currency: string, provider: string): RailOption {
   return RAIL_OPTIONS.find((r) => r.currency === currency && r.provider === provider) ?? RAIL_OPTIONS[0]!;
@@ -326,9 +326,11 @@ export function DepositDialog({ open, onOpenChange, onKycBlocked, defaultRail, k
                   ({result.chain}) to:
                 </p>
                 <p className="break-all rounded bg-background px-3 py-2 font-mono text-xs text-text-primary">{result.address}</p>
-                <p className="text-xs text-warning">
-                  Placeholder address — this feature is not yet connected to a real custodian. Do not send real funds.
-                </p>
+                {result.isPlaceholder && (
+                  <p className="text-xs text-warning">
+                    Placeholder address — this feature is not yet connected to a real custodian. Do not send real funds.
+                  </p>
+                )}
                 <div className="flex items-center gap-2 pt-1 text-xs text-text-tertiary">
                   <span className="h-1.5 w-1.5 animate-pulse-slow rounded-full bg-info" />
                   Waiting for your deposit…

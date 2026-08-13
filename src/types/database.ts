@@ -976,6 +976,7 @@ export type CustodyTransaction = {
   direction: CustodyTransactionDirection;
   amount: number;
   asset: CustodyAsset;
+  destination_address: string | null;
   provider_tx_id: string | null;
   status: CustodyTransactionStatus;
   confirmed_at: string | null;

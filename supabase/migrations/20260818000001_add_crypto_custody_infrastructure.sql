@@ -56,6 +56,12 @@ create table public.custody_transactions (
   -- constraint, not application logic, so extending it later is a
   -- one-line migration, not a code change.
   asset text not null check (asset in ('USDT', 'USDC')),
+  -- Withdrawals only — where the funds should go. Stored here (not just
+  -- reconstructed from withdrawal_requests at approval time) so
+  -- POST /api/admin/custody-transactions/:id/approve has everything it
+  -- needs from this one row, including for a pending_review row that has
+  -- no provider_tx_id yet.
+  destination_address text,
   provider_tx_id text,
   -- 'pending_review': an outbound amount exceeding
   -- custody_settings.withdrawal_review_hold_threshold_usd (or the
