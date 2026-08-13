@@ -1,3 +1,5 @@
+from datetime import UTC, datetime
+
 import pytest
 
 from app import scheduler
@@ -87,6 +89,54 @@ async def test_poll_runs_and_records_heartbeat_when_lock_acquired(monkeypatch):
     assert all(call["id"] == "conn-1" for call in sync_calls)
     assert heartbeat_calls == [True]
     assert release_calls == [True]
+
+
+async def test_poll_filters_on_health_and_next_attempt_at(monkeypatch):
+    """The highest-risk change in the Connection Health build (per the
+    plan): a bug in this query could silently stop polling real
+    connections. Asserts the exact filters sent to Supabase — .neq on
+    'health'/'closed' (matching broker_connections_poll_idx's partial-
+    index predicate so it's actually usable) and .lte on
+    'next_attempt_at' (the backoff gate) — rather than just that some
+    query ran.
+    """
+    supabase = FakeSupabase()
+    supabase.select_responses[("broker_connections", "*")] = []
+
+    async def _lock_acquired():
+        return True
+
+    async def _fake_sync_connection(connection):
+        pass
+
+    async def _fake_heartbeat():
+        pass
+
+    async def _fake_release():
+        pass
+
+    monkeypatch.setattr(scheduler, "acquire_poll_lock", _lock_acquired)
+    monkeypatch.setattr(scheduler, "get_service_client", lambda: supabase)
+    monkeypatch.setattr(scheduler, "sync_connection", _fake_sync_connection)
+    monkeypatch.setattr(scheduler, "record_poll_heartbeat", _fake_heartbeat)
+    monkeypatch.setattr(scheduler, "release_poll_lock", _fake_release)
+
+    await scheduler.poll_all_connections()
+
+    queries = supabase.calls_for("broker_connections", "select")
+    # One query per broker in BROKER_CLIENTS' insertion order.
+    assert len(queries) == len(scheduler.BROKER_CLIENTS)
+    for query in queries:
+        assert ("neq", "health", "closed") in query.filters
+        lte_filters = [f for f in query.filters if f[0] == "lte" and f[1] == "next_attempt_at"]
+        assert len(lte_filters) == 1
+        # The cutoff must be "now" (not e.g. accidentally omitted or a
+        # fixed/stale value) — parses as a real, current ISO timestamp.
+        cutoff = datetime.fromisoformat(lte_filters[0][2])
+        assert abs((datetime.now(UTC) - cutoff).total_seconds()) < 5
+        # sync_status is deliberately NOT filtered on anymore — health is
+        # authoritative, sync_status is just the derived view.
+        assert not any(f[1] == "sync_status" for f in query.filters)
 
 
 async def test_poll_releases_lock_even_if_sync_raises(monkeypatch):

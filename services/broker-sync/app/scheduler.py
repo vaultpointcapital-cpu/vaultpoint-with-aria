@@ -1,24 +1,28 @@
 import asyncio
 import logging
 import time
-from datetime import datetime
+from datetime import UTC, datetime
 
 import sentry_sdk
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from .alert_engine import evaluate_all_alerts as _evaluate_all_alerts
 from .config import settings
+from .fx_service import refresh_fx_rates as _refresh_fx_rates
 from .managed_mode import evaluate_managed_mode as _evaluate_managed_mode
 from .redis_cache import (
     acquire_alert_lock,
+    acquire_fx_refresh_lock,
     acquire_managed_mode_lock,
     acquire_poll_lock,
     acquire_wallet_reconciliation_lock,
     record_alert_evaluation_heartbeat,
+    record_fx_refresh_heartbeat,
     record_managed_mode_evaluation_heartbeat,
     record_poll_heartbeat,
     record_wallet_reconciliation_heartbeat,
     release_alert_lock,
+    release_fx_refresh_lock,
     release_managed_mode_lock,
     release_poll_lock,
     release_wallet_reconciliation_lock,
@@ -49,15 +53,28 @@ async def poll_all_connections() -> None:
 
     try:
         supabase = get_service_client()
+        now_iso = datetime.now(UTC).isoformat()
 
         # Bybit first, then Binance, then KuCoin, then MetaTrader — follows
         # BROKER_CLIENTS' insertion order.
+        #
+        # Connection Health & Data Freshness: health is now authoritative
+        # (sync_status is a derived, backward-compatible view — see
+        # sync_service.py's _DERIVED_SYNC_STATUS) and next_attempt_at
+        # implements per-connection backoff — a connection that's
+        # currently backed off (or auth_failed/prop_breached, which use a
+        # long fixed interval) or closed costs nothing in a poll cycle.
+        # The `.neq('health', 'closed')` filter matches
+        # broker_connections_poll_idx's partial-index predicate exactly
+        # so this can actually use that index rather than falling back to
+        # a full scan.
         for broker in BROKER_CLIENTS:
             result = await asyncio.to_thread(
                 lambda b=broker.value: supabase.table("broker_connections")
                 .select("*")
                 .eq("broker", b)
-                .neq("sync_status", "disconnected")
+                .neq("health", "closed")
+                .lte("next_attempt_at", now_iso)
                 .execute()
             )
             for connection in result.data:
@@ -161,6 +178,29 @@ async def reconcile_wallet_transactions() -> None:
         await release_wallet_reconciliation_lock()
 
 
+async def refresh_fx_rates() -> None:
+    """Same lock/heartbeat/logging shape as the other four jobs — see
+    fx_service.py for the actual CoinGecko/Open Exchange Rates fetch."""
+    if not await acquire_fx_refresh_lock():
+        logger.info("Another instance already holds the FX refresh lock — skipping this cycle.")
+        return
+
+    started_at = time.monotonic()
+    logger.info("refresh_fx_rates: started")
+
+    try:
+        await _refresh_fx_rates()
+        await record_fx_refresh_heartbeat()
+    except Exception:
+        logger.exception("refresh_fx_rates: failed")
+        sentry_sdk.capture_exception()
+        raise
+    finally:
+        duration_seconds = time.monotonic() - started_at
+        logger.info("refresh_fx_rates: finished in %.2fs", duration_seconds)
+        await release_fx_refresh_lock()
+
+
 def start_scheduler() -> None:
     scheduler.add_job(
         poll_all_connections,
@@ -194,12 +234,22 @@ def start_scheduler() -> None:
         next_run_time=datetime.now(),
         max_instances=1,
     )
+    scheduler.add_job(
+        refresh_fx_rates,
+        "interval",
+        seconds=settings.fx_refresh_interval_seconds,
+        id="refresh_fx_rates",
+        next_run_time=datetime.now(),
+        max_instances=1,
+    )
     scheduler.start()
     logger.info(
         "Scheduler started — polling every %ss, evaluating alerts every %ss, "
-        "evaluating managed mode every %ss, reconciling wallet transactions every %ss.",
+        "evaluating managed mode every %ss, reconciling wallet transactions every %ss, "
+        "refreshing FX rates every %ss.",
         settings.poll_interval_seconds,
         settings.alert_evaluation_interval_seconds,
         settings.managed_mode_evaluation_interval_seconds,
         settings.wallet_reconciliation_interval_seconds,
+        settings.fx_refresh_interval_seconds,
     )

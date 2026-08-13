@@ -28,9 +28,11 @@ symbol exists. This is a real functional limitation worth surfacing.
 import asyncio
 import logging
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 
 from .alert_delivery import deliver_alert_email, deliver_alert_in_app
 from .config import settings
+from .connection_health_notifications import notify_alerts_paused
 from .financial import (
     calculate_margin_utilization,
     calculate_net_worth,
@@ -42,6 +44,14 @@ from .supabase_client import get_service_client
 logger = logging.getLogger("broker_sync")
 
 PORTFOLIO_WIDE_TYPES = {"pnl_pct", "pnl_abs", "margin_pct", "drawdown_pct"}
+
+# Connection Health & Data Freshness — same 5-minute staleness threshold
+# src/lib/valuation/providers/position-provider.ts uses (STALE_AFTER_MS),
+# kept in sync by hand across the two runtimes, same as
+# financial.ts/financial.py.
+_POSITION_STALE_AFTER_SECONDS = 5 * 60
+_ALERTS_PAUSED_AFTER_MINUTES = 15
+_HEALTHY_LIKE = {"healthy", "pending"}
 
 
 async def evaluate_all_alerts() -> None:
@@ -67,6 +77,33 @@ async def evaluate_alert(alert: dict) -> None:
     positions = positions_result.data
 
     condition_type = alert["condition_type"]
+
+    # Connection Health & Data Freshness — a portfolio-wide condition
+    # (pnl/margin/drawdown) is only as trustworthy as the positions
+    # feeding it. A price alert isn't suppressed here: it already only
+    # ever evaluates against a specific position's own mark_price (see
+    # _resolve_price_value), so a stale position there simply means "no
+    # match" via the existing not-found path, not a silently-wrong
+    # portfolio-wide aggregate. Connection health is fetched via a
+    # separate query (not an embedded positions select) so this doesn't
+    # change the positions select's column string — that string is a
+    # cache/fixture key elsewhere (this file's own tests, sync_service's
+    # Redis cache), and changing it is its own source of drift.
+    if condition_type in PORTFOLIO_WIDE_TYPES and await _has_stale_input(supabase, positions):
+        await _suppress_alert(supabase, alert)
+        return
+
+    if alert.get("stale_notification_sent_at") is not None:
+        # This evaluation wasn't suppressed — data has recovered. Clear
+        # the one-time "alerts paused" dedup flag so a future stale
+        # streak can notify again.
+        await asyncio.to_thread(
+            lambda: supabase.table("alerts")
+            .update({"stale_notification_sent_at": None})
+            .eq("id", alert["id"])
+            .execute()
+        )
+
     if condition_type in PORTFOLIO_WIDE_TYPES:
         value = await _resolve_portfolio_value(supabase, user_id, condition_type, positions)
     else:
@@ -84,6 +121,92 @@ async def evaluate_alert(alert: dict) -> None:
     await _fire_alert(supabase, alert, value)
 
 
+async def _has_stale_input(supabase, positions: list[dict]) -> bool:
+    """True if any position feeding a portfolio-wide condition is stale
+    — either its own connection's health says so, or it simply hasn't
+    synced in over 5 minutes (covers a connection that's still
+    'healthy' from its last successful cycle but hasn't actually run
+    one in a while, e.g. mid-backoff)."""
+    now = datetime.now(UTC)
+
+    connection_ids = {p["broker_connection_id"] for p in positions if p.get("broker_connection_id")}
+    health_by_connection: dict[str, str] = {}
+    if connection_ids:
+        connections_result = await asyncio.to_thread(
+            lambda: supabase.table("broker_connections")
+            .select("id, health")
+            .in_("id", list(connection_ids))
+            .execute()
+        )
+        health_by_connection = {row["id"]: row.get("health") for row in connections_result.data}
+
+    for p in positions:
+        health = health_by_connection.get(p.get("broker_connection_id"))
+        if health is not None and health not in _HEALTHY_LIKE:
+            return True
+
+        synced_at = p.get("synced_at")
+        if synced_at:
+            synced = datetime.fromisoformat(synced_at)
+            if now - synced > timedelta(seconds=_POSITION_STALE_AFTER_SECONDS):
+                return True
+    return False
+
+
+async def _suppress_alert(supabase, alert: dict) -> None:
+    await asyncio.to_thread(
+        lambda: supabase.table("alert_history")
+        .insert(
+            {
+                "alert_id": alert["id"],
+                "user_id": alert["user_id"],
+                "triggered_value": 0,
+                "message": "Evaluation skipped — underlying portfolio data is stale.",
+                "delivered_via": [],
+                "suppressed": True,
+                "suppressed_reason": "stale_data",
+            }
+        )
+        .execute()
+    )
+    await _maybe_notify_alerts_paused(supabase, alert)
+
+
+async def _maybe_notify_alerts_paused(supabase, alert: dict) -> None:
+    if alert.get("stale_notification_sent_at") is not None:
+        return  # already sent for this suppression streak
+
+    history_result = await asyncio.to_thread(
+        lambda: supabase.table("alert_history")
+        .select("suppressed, created_at")
+        .eq("alert_id", alert["id"])
+        .order("created_at", desc=True)
+        .limit(50)
+        .execute()
+    )
+
+    streak_start: str | None = None
+    for row in history_result.data:
+        if not row.get("suppressed"):
+            break
+        streak_start = row["created_at"]
+
+    if streak_start is None:
+        return
+
+    started = datetime.fromisoformat(streak_start)
+    if datetime.now(UTC) - started < timedelta(minutes=_ALERTS_PAUSED_AFTER_MINUTES):
+        return
+
+    await notify_alerts_paused(alert)
+    await asyncio.to_thread(
+        lambda: supabase.table("alerts")
+        .update({"stale_notification_sent_at": datetime.now(UTC).isoformat()})
+        .eq("id", alert["id"])
+        .execute()
+    )
+
+
 def _resolve_price_value(symbol: str | None, positions: list[dict]) -> float | None:
     if not symbol:
         return None
@@ -93,24 +216,70 @@ def _resolve_price_value(symbol: str | None, positions: list[dict]) -> float | N
     return None
 
 
+def _to_decimal_positions(positions: list[dict]) -> list[dict]:
+    """Money & Currency Layer boundary: financial.py's functions require
+    Decimal inputs and do no conversion themselves — construct via
+    Decimal(str(x)), never Decimal(x) on a float directly (that just
+    encodes the float's own imprecision exactly)."""
+    converted = []
+    for p in positions:
+        converted.append(
+            {
+                **p,
+                "size": Decimal(str(p["size"])),
+                "entry_price": Decimal(str(p["entry_price"])),
+                "mark_price": Decimal(str(p["mark_price"])) if p.get("mark_price") is not None else None,
+                "margin_used": Decimal(str(p["margin_used"])) if p.get("margin_used") is not None else None,
+            }
+        )
+    return converted
+
+
+def _to_decimal_manual_assets(manual_assets: list[dict]) -> list[dict]:
+    return [{**a, "value": Decimal(str(a["value"]))} for a in manual_assets]
+
+
+def _single_currency(positions: list[dict], manual_assets: list[dict]) -> str | None:
+    """financial.py deliberately has no Money-style currency-safety wrapper
+    (see that module's own docstring) — unlike the TS side, mixing
+    currencies here would silently produce a WRONG sum, not throw. Guard
+    explicitly: if a user's positions/manual assets span more than one
+    currency, skip the alert (return None, same "no data available" path
+    as a not-yet-synced position) rather than compute a number that's
+    quietly wrong. Full FX-aware alert evaluation (converting each holding
+    before aggregating, same as the TS side's portfolio route) is a larger
+    follow-up, not attempted here — flagged, not silently done."""
+    currencies = {p.get("currency", "USD") for p in positions} | {a.get("currency", "USD") for a in manual_assets}
+    if len(currencies) > 1:
+        return None
+    return currencies.pop() if currencies else "USD"
+
+
 async def _resolve_portfolio_value(
     supabase, user_id: str, condition_type: str, positions: list[dict]
 ) -> float | None:
     if condition_type == "pnl_pct":
-        return calculate_portfolio_pnl_pct(positions)
+        return calculate_portfolio_pnl_pct(_to_decimal_positions(positions))
 
     if condition_type == "pnl_abs":
-        return calculate_total_pnl(positions)
+        return float(calculate_total_pnl(_to_decimal_positions(positions)))
 
     if condition_type == "margin_pct":
         manual_assets = await _get_manual_assets(supabase, user_id)
-        net_worth = calculate_net_worth(positions, manual_assets)
-        margin_used = sum(p.get("margin_used") or 0 for p in positions)
+        if _single_currency(positions, manual_assets) is None:
+            return None
+        d_positions = _to_decimal_positions(positions)
+        net_worth = calculate_net_worth(d_positions, _to_decimal_manual_assets(manual_assets))
+        margin_used = sum((p["margin_used"] for p in d_positions if p["margin_used"] is not None), Decimal(0))
         return calculate_margin_utilization(margin_used, net_worth)
 
     if condition_type == "drawdown_pct":
         manual_assets = await _get_manual_assets(supabase, user_id)
-        current_net_worth = calculate_net_worth(positions, manual_assets)
+        if _single_currency(positions, manual_assets) is None:
+            return None
+        current_net_worth = float(
+            calculate_net_worth(_to_decimal_positions(positions), _to_decimal_manual_assets(manual_assets))
+        )
         peak_net_worth = await _get_peak_net_worth(supabase, user_id)
         if peak_net_worth is None or peak_net_worth <= 0:
             return None  # no snapshot history yet — nothing to measure drawdown against

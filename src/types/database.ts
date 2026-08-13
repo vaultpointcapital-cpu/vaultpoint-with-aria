@@ -9,6 +9,15 @@
 export type SubscriptionTier = 'free' | 'pro' | 'elite';
 export type BrokerType = 'bybit' | 'binance' | 'kucoin' | 'metatrader';
 export type SyncStatus = 'pending' | 'connected' | 'error' | 'disconnected';
+// Connection Health & Data Freshness — coexists with SyncStatus, it does
+// not replace it. sync_status stays a derived, backward-compatible view
+// (healthy/pending->connected/pending, degraded/stale/auth_failed->error,
+// closed->disconnected) maintained by the Python poller; health is the
+// richer, authoritative signal for freshness-aware consumers (alert
+// suppression, Aria, the dashboard badge). See
+// supabase/migrations/20260806000000_add_connection_health.sql.
+export type HealthState = 'pending' | 'healthy' | 'degraded' | 'stale' | 'auth_failed' | 'closed';
+export type ClosedReason = 'user_removed' | 'provider_closed' | 'prop_breached';
 export type PositionSide = 'long' | 'short' | 'buy' | 'sell';
 export type AssetType = 'bank' | 'property' | 'other';
 export type PodStatus = 'active' | 'completed' | 'archived';
@@ -68,6 +77,9 @@ export type User = {
   // Set once, the first time GET /auth/callback confirms this user's
   // email — null means the welcome email has never been sent.
   welcome_email_sent_at: string | null;
+  // Money & Currency Layer — render-only (D6). Never changes what's
+  // stored; only src/lib/utils/financial.ts's display formatting reads it.
+  display_currency: string;
   created_at: string;
   updated_at: string;
 };
@@ -110,13 +122,45 @@ export type BrokerConnection = {
   sync_status: SyncStatus;
   last_synced_at: string | null;
   last_error: string | null;
+  // Connection Health & Data Freshness — health is authoritative;
+  // sync_status above is kept as a derived view, see the HealthState
+  // comment. next_attempt_at drives poll_all_connections's query
+  // directly (broker_connections_poll_idx) — backoff on repeated
+  // failures means a connection can go multiple cycles without being
+  // polled at all.
+  health: HealthState;
+  last_success_at: string | null;
+  last_attempt_at: string | null;
+  consecutive_failures: number;
+  last_error_code: string | null;
+  next_attempt_at: string;
+  closed_at: string | null;
+  closed_reason: ClosedReason | null;
+  // Which bad health state (if any) a notification has already been sent
+  // for — null once health is healthy/pending again. Prevents both
+  // spamming on a degraded->stale->degraded flap and a recovery notice
+  // firing when no failure notice ever went out.
+  notified_health_state: HealthState | null;
   // Partner Offers v1 — 'partner_hantec' + 'simulated' together mean this
   // connection tracks a prop-firm challenge balance, not the user's own
-  // money. See src/lib/utils/financial.ts's excludeSimulatedPositions().
+  // money. Drives positions.reality via a DB trigger — see the Valuation
+  // Contract, supabase/migrations/20260805000000_add_valuation_contract.sql.
   source: 'manual' | 'partner_hantec';
   account_type: 'live' | 'simulated';
   created_at: string;
   updated_at: string;
+};
+
+// Connection Health & Data Freshness — append-only transition audit log,
+// same shape as step_up_audit_log. from_health is null on the very first
+// event (pending -> whatever the first sync outcome produces).
+export type ConnectionHealthEvent = {
+  id: string;
+  connection_id: string;
+  from_health: HealthState | null;
+  to_health: HealthState;
+  error_code: string | null;
+  created_at: string;
 };
 
 export type PartnerReferralStatus = 'clicked' | 'returned' | 'connected' | 'expired';
@@ -147,6 +191,21 @@ export type PartnerReferral = {
   nudges_sent: number;
 };
 
+// Valuation Contract — src/lib/valuation/types.ts. Reality/Liquidity are
+// DB-level CHECK-constrained string unions; keep these in sync with the
+// migration's constraints, not just the TS side.
+export type Reality = 'real' | 'simulated' | 'pending';
+export type Liquidity = 'liquid' | 'semi_liquid' | 'illiquid';
+export type ValuationAssetClass =
+  | 'crypto'
+  | 'fx'
+  | 'equity'
+  | 'cash'
+  | 'savings_pod'
+  | 'property'
+  | 'prop_account'
+  | 'other';
+
 export type Position = {
   id: string;
   user_id: string;
@@ -156,6 +215,15 @@ export type Position = {
   size: number;
   entry_price: number;
   mark_price: number | null;
+  // Quote currency for entry_price/mark_price — added by the Money &
+  // Currency Layer. size itself has no currency (it's a quantity).
+  currency: string;
+  // Trigger-maintained from broker_connections.account_type (Valuation
+  // Contract) — never set by application code. See
+  // supabase/migrations/20260805000000_add_valuation_contract.sql's
+  // sync_position_reality().
+  reality: Reality;
+  asset_class: ValuationAssetClass;
   leverage: number;
   unrealized_pnl: number | null;
   unrealized_pnl_pct: number | null;
@@ -171,6 +239,21 @@ export type PortfolioSnapshot = {
   crypto_value: number;
   forex_value: number;
   manual_assets_value: number;
+  // Always 'USD' today — the daily snapshot job (sync_service.py) converts
+  // every currency to USD before summing. currency/fx_rates/rates_stale
+  // added by the Money & Currency Layer.
+  currency: string;
+  // The exact rate map used at write time — the D7 reproducibility
+  // guarantee. A historical read must call FxService.convertAt() against
+  // this, never a live rate.
+  fx_rates: Record<string, string>;
+  rates_stale: boolean;
+  // Connection Health & Data Freshness — true if any contributing
+  // connection's health was not 'healthy' at snapshot time.
+  // degraded_sources never fabricates a clean number; it names exactly
+  // which broker/label contributed stale data.
+  degraded: boolean;
+  degraded_sources: Array<{ broker: BrokerType; label: string }>;
   snapshot_date: string;
   created_at: string;
 };
@@ -182,6 +265,13 @@ export type ManualAsset = {
   asset_type: AssetType;
   value: number;
   currency: string;
+  // Valuation Contract — user-entered, so provenance is always
+  // 'user_entered' (not stored; derived by ManualAssetProvider). reality
+  // defaults 'real' (self-reported, not verified — a manual_assets row is
+  // never trigger-derived the way positions.reality is).
+  reality: Reality;
+  liquidity: Liquidity;
+  asset_class: ValuationAssetClass;
   created_at: string;
   updated_at: string;
 };
@@ -198,6 +288,8 @@ export type SavingsPod = {
   // Informational reminder cadence only — no automated transfer is ever
   // scheduled from this value. See the migration comment on this column.
   funding_reminder: 'weekly' | 'biweekly' | 'monthly' | null;
+  // Valuation Contract — defaults 'semi_liquid'.
+  liquidity: Liquidity;
   status: PodStatus;
   created_at: string;
   updated_at: string;
@@ -208,8 +300,20 @@ export type PodContribution = {
   pod_id: string;
   user_id: string;
   amount: number;
+  // Always equal to the parent pod's own currency — contribute_to_pod()
+  // rejects a mismatched p_currency rather than converting. Added by the
+  // Money & Currency Layer.
+  currency: string;
   note: string | null;
   created_at: string;
+};
+
+export type FxRate = {
+  id: string;
+  currency: string;
+  rate_to_usd: number;
+  source: 'openexchangerates' | 'binance' | 'manual' | 'cbn_official' | 'parallel_market';
+  fetched_at: string;
 };
 
 export type WalletTxnType =
@@ -293,6 +397,11 @@ export type Alert = {
   // means never triggered. See
   // supabase/migrations/20260717000005_add_alert_engine_cooldown_and_drawdown.sql
   last_triggered_at: string | null;
+  // Connection Health & Data Freshness — set once when this alert has
+  // been continuously suppressed (stale input) for 15+ minutes, so the
+  // "alerts paused" notice fires once, not every evaluation cycle;
+  // cleared on the next non-suppressed evaluation.
+  stale_notification_sent_at: string | null;
   created_at: string;
 };
 
@@ -303,6 +412,12 @@ export type AlertHistoryEntry = {
   triggered_value: number;
   message: string;
   delivered_via: string[];
+  // Connection Health & Data Freshness — true when this evaluation was
+  // skipped because its input data was stale (connection health not
+  // healthy/pending, or a position synced >5min ago); no email/in-app
+  // delivery happens for a suppressed row.
+  suppressed: boolean;
+  suppressed_reason: string | null;
   created_at: string;
 };
 
@@ -785,6 +900,22 @@ export type SignalOutcome = {
   closed_at: string;
 };
 
+// Aria Context Builder — the exact sanitized payload buildAriaContext()
+// sent to the model, once per fresh (non-cached) build. See
+// src/lib/aria/context.ts. payload is the AriaContext shape
+// (src/lib/aria/types.ts) as plain JSON, not re-typed here — this is an
+// audit/reproducibility record, not something the app reads back and
+// deserializes into a live AriaContext.
+export type AriaContextSnapshot = {
+  id: string;
+  user_id: string;
+  version: string;
+  payload: Record<string, unknown>;
+  generated_at: string;
+  expires_at: string;
+  created_at: string;
+};
+
 // ----------------------------------------------------------------------------
 // Supabase Database type — used to type the Supabase client generically.
 // Mirrors the shape `supabase gen types typescript` would produce.
@@ -836,6 +967,15 @@ export interface Database {
           | 'managed_mode_consented_at'
           | 'source'
           | 'account_type'
+          | 'health'
+          | 'last_success_at'
+          | 'last_attempt_at'
+          | 'consecutive_failures'
+          | 'last_error_code'
+          | 'next_attempt_at'
+          | 'closed_at'
+          | 'closed_reason'
+          | 'notified_health_state'
         > & {
           metaapi_account_id?: string | null;
           metaapi_region?: string | null;
@@ -850,6 +990,17 @@ export interface Database {
           // only POST /api/brokers's Hantec-connect path ever sets these.
           source?: 'manual' | 'partner_hantec';
           account_type?: 'live' | 'simulated';
+          // Connection Health & Data Freshness — all DB-defaulted; a
+          // brand new connection starts 'pending' with next_attempt_at=now().
+          health?: HealthState;
+          last_success_at?: string | null;
+          last_attempt_at?: string | null;
+          consecutive_failures?: number;
+          last_error_code?: string | null;
+          next_attempt_at?: string;
+          closed_at?: string | null;
+          closed_reason?: ClosedReason | null;
+          notified_health_state?: HealthState | null;
         };
         Update: Partial<Omit<BrokerConnection, 'id' | 'user_id'>>;
         Relationships: [];
@@ -872,7 +1023,14 @@ export interface Database {
       };
       positions: {
         Row: Position;
-        Insert: Omit<Position, 'id' | 'synced_at'>;
+        Insert: Omit<Position, 'id' | 'synced_at' | 'currency' | 'reality' | 'asset_class'> & {
+          currency?: string;
+          // reality is trigger-derived server-side — never actually set by
+          // any insert, TS or Python; optional here purely so the type
+          // doesn't demand a value no caller should ever provide.
+          reality?: Reality;
+          asset_class?: ValuationAssetClass;
+        };
         Update: Partial<Omit<Position, 'id' | 'user_id'>>;
         // The only embedded-select relation actually used in the app
         // (positions.select('*, broker_connections(...)')) — without real
@@ -892,27 +1050,73 @@ export interface Database {
       };
       portfolio_snapshots: {
         Row: PortfolioSnapshot;
-        Insert: Omit<PortfolioSnapshot, 'id' | 'created_at'>;
+        Insert: Omit<
+          PortfolioSnapshot,
+          'id' | 'created_at' | 'currency' | 'fx_rates' | 'rates_stale' | 'degraded' | 'degraded_sources'
+        > & {
+          currency?: string;
+          fx_rates?: Record<string, string>;
+          rates_stale?: boolean;
+          degraded?: boolean;
+          degraded_sources?: Array<{ broker: BrokerType; label: string }>;
+        };
         Update: never; // append-only
+        Relationships: [];
+      };
+      connection_health_events: {
+        Row: ConnectionHealthEvent;
+        Insert: Omit<ConnectionHealthEvent, 'id' | 'created_at' | 'from_health' | 'error_code'> & {
+          from_health?: HealthState | null;
+          error_code?: string | null;
+        };
+        Update: never; // append-only
+        Relationships: [
+          {
+            foreignKeyName: 'connection_health_events_connection_id_fkey';
+            columns: ['connection_id'];
+            isOneToOne: false;
+            referencedRelation: 'broker_connections';
+            referencedColumns: ['id'];
+          },
+        ];
+      };
+      aria_context_snapshots: {
+        Row: AriaContextSnapshot;
+        Insert: Omit<AriaContextSnapshot, 'id' | 'created_at' | 'version' | 'expires_at'> & {
+          version?: string;
+          expires_at?: string;
+        };
+        Update: never; // append-only
+        Relationships: [];
+      };
+      fx_rates: {
+        Row: FxRate;
+        Insert: Omit<FxRate, 'id' | 'fetched_at'> & { fetched_at?: string };
+        Update: never; // audit history — every fetch is a new row, never updated
         Relationships: [];
       };
       manual_assets: {
         Row: ManualAsset;
-        Insert: Omit<ManualAsset, 'id' | 'created_at' | 'updated_at'>;
+        Insert: Omit<ManualAsset, 'id' | 'created_at' | 'updated_at' | 'reality' | 'liquidity' | 'asset_class'> & {
+          reality?: Reality;
+          liquidity?: Liquidity;
+          asset_class?: ValuationAssetClass;
+        };
         Update: Partial<Omit<ManualAsset, 'id' | 'user_id'>>;
         Relationships: [];
       };
       savings_pods: {
         Row: SavingsPod;
-        Insert: Omit<SavingsPod, 'id' | 'created_at' | 'updated_at' | 'current_amount'> & {
+        Insert: Omit<SavingsPod, 'id' | 'created_at' | 'updated_at' | 'current_amount' | 'liquidity'> & {
           current_amount?: number;
+          liquidity?: Liquidity;
         };
         Update: Partial<Omit<SavingsPod, 'id' | 'user_id'>>;
         Relationships: [];
       };
       pod_contributions: {
         Row: PodContribution;
-        Insert: Omit<PodContribution, 'id' | 'created_at'>;
+        Insert: Omit<PodContribution, 'id' | 'created_at' | 'currency'> & { currency?: string };
         Update: never; // append-only
         Relationships: [];
       };
@@ -948,13 +1152,19 @@ export interface Database {
         Row: Alert;
         // last_triggered_at is set only by the Python Alert Engine's own
         // update after firing — never by the Next.js create/edit routes.
-        Insert: Omit<Alert, 'id' | 'created_at' | 'last_triggered_at'>;
+        // stale_notification_sent_at is likewise Python-only.
+        Insert: Omit<Alert, 'id' | 'created_at' | 'last_triggered_at' | 'stale_notification_sent_at'> & {
+          stale_notification_sent_at?: string | null;
+        };
         Update: Partial<Omit<Alert, 'id' | 'user_id'>>;
         Relationships: [];
       };
       alert_history: {
         Row: AlertHistoryEntry;
-        Insert: Omit<AlertHistoryEntry, 'id' | 'created_at'>;
+        Insert: Omit<AlertHistoryEntry, 'id' | 'created_at' | 'suppressed' | 'suppressed_reason'> & {
+          suppressed?: boolean;
+          suppressed_reason?: string | null;
+        };
         Update: never; // append-only
         Relationships: [];
       };
@@ -1207,12 +1417,16 @@ export interface Database {
     };
     Functions: {
       // supabase/migrations/20260617000001_atomic_pod_contribution.sql
+      // Args grew a p_currency param in 20260804000000_add_money_currency_layer.sql
+      // (currency-safety check, no conversion) — signature was dropped and
+      // recreated, not overloaded.
       contribute_to_pod: {
         Args: {
           p_pod_id: string;
           p_user_id: string;
           p_amount: number;
           p_note?: string | null;
+          p_currency?: string | null;
         };
         Returns: {
           contribution_id: string;

@@ -15,12 +15,14 @@ export default async function BrokersPage() {
     supabase
       .from('broker_connections')
       .select(
-        'id, broker, label, is_read_only, trade_execution_enabled, managed_mode_enabled, managed_mode_risk_pct, managed_mode_daily_loss_limit_pct, sync_status, last_synced_at, last_error, created_at'
+        'id, broker, label, is_read_only, trade_execution_enabled, managed_mode_enabled, managed_mode_risk_pct, managed_mode_daily_loss_limit_pct, sync_status, last_synced_at, last_error, health, last_error_code, closed_reason, created_at'
       )
       .eq('user_id', authData.user.id)
       // See DELETE /api/brokers/:id — a connection with trade history is
-      // soft-disconnected (sync_status='disconnected'), not deleted.
-      .neq('sync_status', 'disconnected')
+      // soft-disconnected (health='closed', sync_status derives to
+      // 'disconnected' from it — see sync_service.py's
+      // _DERIVED_SYNC_STATUS), not deleted.
+      .neq('health', 'closed')
       .order('created_at', { ascending: false }),
     supabase.from('users').select('subscription_tier').eq('id', authData.user.id).single(),
   ]);

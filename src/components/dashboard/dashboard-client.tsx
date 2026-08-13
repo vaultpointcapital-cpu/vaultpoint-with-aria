@@ -8,17 +8,51 @@ import { Badge } from '@/components/ui/badge';
 import { NetWorthChart } from '@/components/dashboard/net-worth-chart';
 import { DailyVideoCard } from '@/components/dashboard/daily-video-card';
 import { OfferCard, type OfferCardData } from '@/components/offers/offer-card';
-import { formatCurrency, formatPercentage } from '@/lib/utils/cn';
-import { calculatePositionPnl, calculatePositionPnlPct, calculatePodProgress } from '@/lib/utils/financial';
-import type { Position, SavingsPod, PortfolioSnapshot, AcademyVideo } from '@/types/database';
+import { formatMoneyJSON, formatPercentage } from '@/lib/utils/cn';
+import type { MoneyJSON } from '@/lib/money';
+import type { PortfolioSnapshot, AcademyVideo } from '@/types/database';
 
-type PositionWithAccountType = Position & { broker_connections: { account_type: string } | null };
+/**
+ * Money & Currency Layer: decimal.js/Money only ever runs server-side —
+ * this 'use client' component never imports financial.ts or Money, only
+ * receives already-computed MoneyJSON/plain-number props from
+ * dashboard/page.tsx and renders them with formatMoneyJSON (dependency-free).
+ */
+export interface DisplayPosition {
+  id: string;
+  symbol: string;
+  side: string;
+  size: number;
+  unrealizedPnl: MoneyJSON | null;
+  unrealizedPnlPct: number | null;
+}
+
+export interface DisplayPod {
+  id: string;
+  name: string;
+  color: string;
+  currentAmount: MoneyJSON;
+  targetAmount: MoneyJSON;
+  progressPct: number;
+}
+
+/** Valuation Contract — one row per simulated broker connection
+ * (PropAccountProvider's Holding), not per position. `value` is null only
+ * if that connection's currency had no obtainable FX rate for display. */
+export interface DisplayFundedAccount {
+  id: string;
+  label: string;
+  value: MoneyJSON | null;
+}
 
 interface DashboardClientProps {
-  initialNetWorth: number;
-  initialPnl: number;
-  initialPositions: PositionWithAccountType[];
-  initialPods: SavingsPod[];
+  initialNetWorth: MoneyJSON;
+  initialPnl: MoneyJSON;
+  livePositions: DisplayPosition[];
+  fundedAccounts: DisplayFundedAccount[];
+  totalPositionCount: number;
+  unpricedHoldings: string[];
+  initialPods: DisplayPod[];
   initialSnapshots: PortfolioSnapshot[];
   dailyVideo: AcademyVideo | null;
   hasConnectedBroker: boolean;
@@ -28,25 +62,21 @@ interface DashboardClientProps {
 export function DashboardClient({
   initialNetWorth,
   initialPnl,
-  initialPositions,
+  livePositions,
+  fundedAccounts,
+  totalPositionCount,
+  unpricedHoldings,
   initialPods,
   initialSnapshots,
   dailyVideo,
   hasConnectedBroker,
   offers,
 }: DashboardClientProps) {
-  if (!hasConnectedBroker && initialPositions.length === 0) {
+  if (!hasConnectedBroker && totalPositionCount === 0) {
     return <EmptyDashboardState dailyVideo={dailyVideo} offers={offers} />;
   }
 
-  // Simulated-capital positions (Partner Offers v1) are rendered in their
-  // own "Funded accounts" section below, never mixed into the regular
-  // Open Positions stat/list — that list's dollar figures must only ever
-  // reflect the user's own money, same rule as net worth.
-  const livePositions = initialPositions.filter((p) => p.broker_connections?.account_type !== 'simulated');
-  const simulatedPositions = initialPositions.filter((p) => p.broker_connections?.account_type === 'simulated');
-
-  const isPnlPositive = initialPnl >= 0;
+  const isPnlPositive = Number(initialPnl.amount) >= 0;
 
   return (
     <div className="mx-auto max-w-5xl space-y-5 p-6">
@@ -57,7 +87,7 @@ export function DashboardClient({
           Total Portfolio Value
         </p>
         <p className="mt-1 font-display text-4xl font-bold tracking-tight text-text-primary">
-          {formatCurrency(initialNetWorth)}
+          {formatMoneyJSON(initialNetWorth)}
         </p>
         <div className="mt-3 flex items-center gap-2 font-mono-num text-sm">
           {isPnlPositive ? (
@@ -66,9 +96,15 @@ export function DashboardClient({
             <TrendingDown className="h-4 w-4 text-warning" />
           )}
           <span className={isPnlPositive ? 'text-success' : 'text-warning'}>
-            {formatCurrency(initialPnl)} unrealized
+            {formatMoneyJSON(initialPnl)} unrealized
           </span>
         </div>
+        {unpricedHoldings.length > 0 && (
+          <p className="mt-2 text-xs text-warning">
+            Couldn&apos;t price {unpricedHoldings.join(', ')} in {initialNetWorth.currency} — excluded from the
+            totals above, not counted as zero.
+          </p>
+        )}
       </Card>
 
       <DailyVideoCard video={dailyVideo} />
@@ -94,7 +130,7 @@ export function DashboardClient({
               isPnlPositive ? 'text-success' : 'text-warning'
             }`}
           >
-            {formatCurrency(initialPnl)}
+            {formatMoneyJSON(initialPnl)}
           </p>
         </Card>
         <Card>
@@ -119,25 +155,7 @@ export function DashboardClient({
             </p>
           ) : (
             livePositions.map((position) => {
-              const pnl =
-                position.mark_price !== null
-                  ? calculatePositionPnl({
-                      side: position.side,
-                      size: position.size,
-                      entry_price: position.entry_price,
-                      mark_price: position.mark_price,
-                    })
-                  : null;
-              const pnlPct =
-                position.mark_price !== null
-                  ? calculatePositionPnlPct({
-                      side: position.side,
-                      size: position.size,
-                      entry_price: position.entry_price,
-                      mark_price: position.mark_price,
-                    })
-                  : null;
-              const positive = (pnl ?? 0) >= 0;
+              const positive = position.unrealizedPnl !== null && Number(position.unrealizedPnl.amount) >= 0;
 
               return (
                 <div
@@ -151,13 +169,13 @@ export function DashboardClient({
                     </p>
                   </div>
                   <div className="text-right font-mono-num text-sm">
-                    {pnl !== null ? (
+                    {position.unrealizedPnl !== null ? (
                       <>
                         <p className={positive ? 'text-success' : 'text-warning'}>
-                          {formatCurrency(pnl)}
+                          {formatMoneyJSON(position.unrealizedPnl)}
                         </p>
                         <p className={`text-xs ${positive ? 'text-success' : 'text-warning'}`}>
-                          {formatPercentage(pnlPct ?? 0)}
+                          {formatPercentage(position.unrealizedPnlPct ?? 0)}
                         </p>
                       </>
                     ) : (
@@ -171,9 +189,11 @@ export function DashboardClient({
         </CardContent>
       </Card>
 
-      {/* Funded accounts — simulated-capital connections (Partner Offers v1).
-          Never shown alongside real dollar P&L: challenge progress only. */}
-      {simulatedPositions.length > 0 && (
+      {/* Funded accounts — simulated broker connections (Partner Offers v1),
+          one row per account (Valuation Contract's PropAccountProvider),
+          not per position. Never shown alongside real dollar P&L: challenge
+          progress only. */}
+      {fundedAccounts.length > 0 && (
         <Card>
           <CardHeader className="flex-row items-center gap-2">
             <CardTitle>Funded accounts</CardTitle>
@@ -183,41 +203,24 @@ export function DashboardClient({
             <p className="mb-2 text-xs text-text-tertiary">
               Not your own funds — excluded from your net worth above.
             </p>
-            {simulatedPositions.map((position) => {
-              const progress =
-                position.mark_price !== null
-                  ? calculatePositionPnl({
-                      side: position.side,
-                      size: position.size,
-                      entry_price: position.entry_price,
-                      mark_price: position.mark_price,
-                    })
-                  : null;
-
-              return (
-                <div
-                  key={position.id}
-                  className="flex items-center justify-between border-b border-border py-3 last:border-none"
-                >
-                  <div>
-                    <p className="text-sm font-semibold text-text-primary">{position.symbol}</p>
-                    <p className="text-xs text-text-tertiary">
-                      {position.side.toUpperCase()} · {position.size}
-                    </p>
-                  </div>
-                  <div className="text-right font-mono-num text-sm">
-                    {progress !== null ? (
-                      <>
-                        <p className="text-text-primary">{formatCurrency(progress)}</p>
-                        <p className="text-xs text-text-tertiary">challenge progress</p>
-                      </>
-                    ) : (
-                      <p className="text-xs text-text-tertiary">Awaiting sync...</p>
-                    )}
-                  </div>
+            {fundedAccounts.map((account) => (
+              <div
+                key={account.id}
+                className="flex items-center justify-between border-b border-border py-3 last:border-none"
+              >
+                <p className="text-sm font-semibold text-text-primary">{account.label}</p>
+                <div className="text-right font-mono-num text-sm">
+                  {account.value !== null ? (
+                    <>
+                      <p className="text-text-primary">{formatMoneyJSON(account.value)}</p>
+                      <p className="text-xs text-text-tertiary">challenge progress</p>
+                    </>
+                  ) : (
+                    <p className="text-xs text-text-tertiary">Couldn&apos;t price</p>
+                  )}
                 </div>
-              );
-            })}
+              </div>
+            ))}
           </CardContent>
         </Card>
       )}
@@ -241,24 +244,21 @@ export function DashboardClient({
             </Link>
           ) : (
             <div className="grid grid-cols-3 gap-3">
-              {initialPods.map((pod) => {
-                const progress = calculatePodProgress(pod.current_amount, pod.target_amount);
-                return (
-                  <div key={pod.id} className="rounded-lg border border-border bg-surface-elevated p-4">
-                    <p className="mb-3 text-sm font-semibold text-text-primary">{pod.name}</p>
-                    <div className="h-1.5 w-full rounded-full bg-border">
-                      <div
-                        className="h-full rounded-full"
-                        style={{ width: `${progress}%`, backgroundColor: pod.color }}
-                      />
-                    </div>
-                    <div className="mt-2 flex justify-between font-mono-num text-xs text-text-secondary">
-                      <span>{formatCurrency(pod.current_amount)}</span>
-                      <span>{formatCurrency(pod.target_amount)}</span>
-                    </div>
+              {initialPods.map((pod) => (
+                <div key={pod.id} className="rounded-lg border border-border bg-surface-elevated p-4">
+                  <p className="mb-3 text-sm font-semibold text-text-primary">{pod.name}</p>
+                  <div className="h-1.5 w-full rounded-full bg-border">
+                    <div
+                      className="h-full rounded-full"
+                      style={{ width: `${pod.progressPct}%`, backgroundColor: pod.color }}
+                    />
                   </div>
-                );
-              })}
+                  <div className="mt-2 flex justify-between font-mono-num text-xs text-text-secondary">
+                    <span>{formatMoneyJSON(pod.currentAmount)}</span>
+                    <span>{formatMoneyJSON(pod.targetAmount)}</span>
+                  </div>
+                </div>
+              ))}
             </div>
           )}
         </CardContent>

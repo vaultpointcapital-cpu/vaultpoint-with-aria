@@ -4,6 +4,7 @@ import { encrypt, maskKey } from '@/lib/encryption/broker-keys';
 import { addBrokerConnectionSchema } from '@/lib/validations/broker';
 import { isStepUpApproved } from '@/lib/auth/step-up';
 import { apiError, apiSuccess } from '@/lib/utils/api-response';
+import { invalidateAriaContext } from '@/lib/aria/cache';
 
 /**
  * GET /api/brokers
@@ -22,15 +23,16 @@ export async function GET() {
   const { data, error } = await supabase
     .from('broker_connections')
     .select(
-      'id, broker, label, is_read_only, trade_execution_enabled, managed_mode_enabled, managed_mode_risk_pct, managed_mode_daily_loss_limit_pct, sync_status, last_synced_at, last_error, source, account_type, created_at'
+      'id, broker, label, is_read_only, trade_execution_enabled, managed_mode_enabled, managed_mode_risk_pct, managed_mode_daily_loss_limit_pct, sync_status, last_synced_at, last_error, health, last_error_code, closed_reason, source, account_type, created_at'
     )
     .eq('user_id', authData.user.id)
-    // A connection with trade history is soft-disconnected (sync_status
-    // flips to 'disconnected'), never hard-deleted — see DELETE
-    // /api/brokers/:id. Exclude it here so it disappears from the user's
-    // list exactly as if it had been deleted, even though the row (and
-    // its trade history) still exists.
-    .neq('sync_status', 'disconnected')
+    // A connection with trade history is soft-disconnected (health flips
+    // to 'closed', sync_status derives to 'disconnected' from it — see
+    // sync_service.py's _DERIVED_SYNC_STATUS), never hard-deleted — see
+    // DELETE /api/brokers/:id. Exclude it here so it disappears from the
+    // user's list exactly as if it had been deleted, even though the row
+    // (and its trade history) still exists.
+    .neq('health', 'closed')
     .order('created_at', { ascending: false });
 
   if (error) {
@@ -165,6 +167,11 @@ export async function POST(request: NextRequest) {
       console.error('[brokers] vpRef did not match a referral for this user:', vpRef);
     }
   }
+
+  // A new connection changes what Aria would report (a new source of
+  // holdings, or a fresh 'pending' health) — invalidate rather than
+  // wait out the 60s TTL.
+  await invalidateAriaContext(authData.user.id);
 
   return apiSuccess(
     {

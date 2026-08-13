@@ -4,8 +4,7 @@ import { CheckCircle2 } from 'lucide-react';
 import { formatDistanceToNowStrict, isPast } from 'date-fns';
 import { Card } from '@/components/ui/card';
 import { PodArc } from '@/components/pods/pod-arc';
-import { formatCurrency } from '@/lib/utils/cn';
-import { calculatePodProgress } from '@/lib/utils/financial';
+import { formatCurrency, calculateProgressPct } from '@/lib/utils/cn';
 import type { SavingsPod } from '@/types/database';
 
 interface PodCardProps {
@@ -15,7 +14,7 @@ interface PodCardProps {
 
 export function PodCard({ pod, onClick }: PodCardProps) {
   const isComplete = pod.current_amount >= pod.target_amount;
-  const progress = calculatePodProgress(pod.current_amount, pod.target_amount);
+  const progress = calculateProgressPct(pod.current_amount, pod.target_amount);
   const deadlineDate = pod.deadline ? new Date(pod.deadline) : null;
 
   return (

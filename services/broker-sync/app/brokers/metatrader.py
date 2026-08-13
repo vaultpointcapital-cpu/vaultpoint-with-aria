@@ -26,6 +26,19 @@ class MetaTraderAccountNotReadyError(Exception):
     retained, error recorded, retried next cycle."""
 
 
+class MetaTraderAuthError(Exception):
+    """The MT login/password/server were rejected by the broker itself
+    (not a MetaApi-side problem) — sync_outcomes.py classifies this as
+    AUTH_FAILED, which halts polling rather than retrying forever.
+    Best-effort heuristic, flagged: MetaApi's account status response
+    doesn't expose a dedicated "bad credentials" field this service has
+    verified against a live rejection, so this infers auth failure from
+    state=DEPLOY_FAILED — MetaApi's documented terminal state for "the
+    broker refused this login," as distinct from DEPLOYING/UNDEPLOYED
+    (still provisioning, transient) or a network-level failure raised
+    before any state is even returned."""
+
+
 class MetaTraderClient(BrokerClient):
     """MT4/MT5 via MetaApi — the only supported broker with no REST API
     of its own, and the only one with a fundamentally different
@@ -140,6 +153,11 @@ class MetaTraderClient(BrokerClient):
             self.region = body.get("region")
             if body.get("state") == "DEPLOYED" and body.get("connectionStatus") == "CONNECTED":
                 return
+            if body.get("state") == "DEPLOY_FAILED":
+                raise MetaTraderAuthError(
+                    f"MetaApi account {self.account_id} failed to deploy — "
+                    f"the broker likely rejected the login/password/server combination."
+                )
             await asyncio.sleep(DEPLOY_POLL_INTERVAL_SECONDS)
 
         raise MetaTraderAccountNotReadyError(

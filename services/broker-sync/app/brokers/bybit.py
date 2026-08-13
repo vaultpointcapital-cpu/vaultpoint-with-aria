@@ -3,6 +3,7 @@ import hashlib
 import hmac
 import json
 import time
+from decimal import Decimal
 
 import httpx
 
@@ -169,8 +170,13 @@ class BybitClient(BrokerClient):
             pnl = None
             pnl_pct = None
             if mark_price is not None:
-                pnl = calculate_position_pnl(side, size, entry_price, mark_price)
-                pnl_pct = calculate_position_pnl_pct(side, size, entry_price, mark_price)
+                # Decimal at the arithmetic boundary (D1) — converted back
+                # to float only for the Position model, which stays float
+                # (it's the broker-agnostic upsert shape, not itself a
+                # money-precision-critical aggregation point).
+                d_size, d_entry, d_mark = Decimal(str(size)), Decimal(str(entry_price)), Decimal(str(mark_price))
+                pnl = float(calculate_position_pnl(side, d_size, d_entry, d_mark))
+                pnl_pct = calculate_position_pnl_pct(side, d_size, d_entry, d_mark)
 
             positions.append(
                 Position(

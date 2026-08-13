@@ -1,8 +1,11 @@
+import Decimal from 'decimal.js';
 import { Lock } from 'lucide-react';
 import { createClient } from '@/lib/supabase/server';
 import { canUseAria } from '@/lib/validations/aria';
 import { getDefaultMarketSymbol } from '@/lib/utils/tradingview';
-import { calculateNetWorth, calculatePositionPnlPct } from '@/lib/utils/financial';
+import { calculatePositionPnlPct } from '@/lib/utils/financial';
+import { Money } from '@/lib/money';
+import { calculateNetWorthResult } from '@/lib/valuation/networth';
 import { TradingViewChart } from '@/components/markets/tradingview-chart';
 import { AriaChat } from '@/components/markets/aria-chat';
 import { TickerStrip } from '@/components/markets/ticker-strip';
@@ -26,22 +29,30 @@ export default async function MarketsPage() {
     return null;
   }
 
-  const [positionsResult, profileResult, manualAssetsResult] = await Promise.all([
+  const [positionsResult, profileResult] = await Promise.all([
     supabase
       .from('positions')
-      .select('id, symbol, side, size, entry_price, mark_price, broker_connections(broker)')
+      .select('id, symbol, side, size, entry_price, mark_price, currency, broker_connections(broker, account_type)')
       .eq('user_id', authData.user.id),
-    supabase.from('users').select('subscription_tier').eq('id', authData.user.id).single(),
-    supabase.from('manual_assets').select('*').eq('user_id', authData.user.id),
+    supabase.from('users').select('subscription_tier, display_currency').eq('id', authData.user.id).single(),
   ]);
 
   const positions = (positionsResult.data ?? []) as unknown as PositionSymbolRow[];
   const tier = profileResult.data?.subscription_tier ?? 'free';
   const defaultSymbol = getDefaultMarketSymbol(positions);
+  const displayCurrency = profileResult.data?.display_currency ?? 'USD';
 
   const fullPositions = positionsResult.data ?? [];
-  const manualAssets = manualAssetsResult.data ?? [];
-  const netWorth = calculateNetWorth(fullPositions, manualAssets);
+
+  // Valuation Contract — the same aggregator the dashboard and Aria use.
+  // Previously (pre-Valuation-Contract) this page independently
+  // duplicated the fetch/filter/convert/sum block and, at one point,
+  // shipped without excluding simulated positions at all — exactly the
+  // drift risk a single shared aggregator exists to remove.
+  const netWorthResult = await calculateNetWorthResult(authData.user.id, displayCurrency);
+
+  // Per-position figures stay in native currency (ticker display), same
+  // convention as /api/portfolio and Aria's context.
   const tickerPositions = fullPositions.map((p) => ({
     id: p.id,
     symbol: p.symbol,
@@ -50,9 +61,9 @@ export default async function MarketsPage() {
       p.mark_price !== null
         ? calculatePositionPnlPct({
             side: p.side,
-            size: p.size,
-            entry_price: p.entry_price,
-            mark_price: p.mark_price,
+            size: new Decimal(String(p.size)),
+            entryPrice: Money.of(String(p.entry_price), p.currency),
+            markPrice: Money.of(String(p.mark_price), p.currency),
           })
         : null,
   }));
@@ -62,7 +73,7 @@ export default async function MarketsPage() {
       <MarketsPageViewTracker hasPositions={tickerPositions.some((p) => p.mark_price !== null)} />
       <h1 className="font-display text-xl font-semibold text-text-primary">Markets</h1>
 
-      <TickerStrip initialNetWorth={netWorth} initialPositions={tickerPositions} />
+      <TickerStrip initialNetWorth={netWorthResult.total.toJSON()} initialPositions={tickerPositions} />
 
       <div className="grid grid-cols-1 gap-5 lg:grid-cols-3">
         <div className="lg:col-span-2">

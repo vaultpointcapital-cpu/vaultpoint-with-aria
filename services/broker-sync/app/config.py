@@ -72,5 +72,16 @@ class Settings(BaseSettings):
     # Once daily by default — a nightly diff, not a live reconciliation.
     wallet_reconciliation_interval_seconds: int = 86400
 
+    # Money & Currency Layer (supabase/migrations/20260804000000_add_money_currency_layer.sql).
+    # Fiat rates (NGN, GHS, KES, GBP, EUR) come from Open Exchange Rates,
+    # gated on this key — unset means that leg logs and skips (no vendor
+    # account exists in this environment yet), same placeholder treatment
+    # as Paystack Transfers/Stripe Connect in the wallet build. Crypto/
+    # stablecoin rates need no key — Binance's public ticker endpoint.
+    open_exchange_rates_app_id: str | None = None
+    # Half the Redis TTL (3600s) below, so a single failed run never
+    # causes a cache miss — same reasoning as every other job's interval.
+    fx_refresh_interval_seconds: int = 1800
+
 
 settings = Settings()

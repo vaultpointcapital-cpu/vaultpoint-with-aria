@@ -36,7 +36,31 @@ export function NetWorthChart({ snapshots }: NetWorthChartProps) {
     );
   }
 
-  const data = snapshots.map((s) => ({
+  // Connection Health & Data Freshness — a snapshot taken while a
+  // contributing connection wasn't healthy is excluded from the chart
+  // rather than plotted as if it were a normal data point (same "never
+  // fabricate, always disclose" principle as an unpriced holding). If
+  // every snapshot is degraded, this can legitimately render an empty
+  // chart — that's still more honest than plotting numbers known to be
+  // built on stale data.
+  const cleanSnapshots = snapshots.filter((s) => !s.degraded);
+  const excludedCount = snapshots.length - cleanSnapshots.length;
+
+  if (cleanSnapshots.length === 0) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle>Net Worth History</CardTitle>
+        </CardHeader>
+        <p className="py-10 text-center text-sm text-text-tertiary">
+          Every recorded snapshot was affected by a broker connection issue — history will
+          appear here once a healthy snapshot is recorded.
+        </p>
+      </Card>
+    );
+  }
+
+  const data = cleanSnapshots.map((s) => ({
     date: s.snapshot_date,
     total: s.total_net_worth,
   }));
@@ -46,6 +70,13 @@ export function NetWorthChart({ snapshots }: NetWorthChartProps) {
       <CardHeader>
         <CardTitle>Net Worth History</CardTitle>
       </CardHeader>
+      {excludedCount > 0 && (
+        <p className="px-1 pb-2 text-xs text-text-tertiary">
+          {excludedCount === 1
+            ? '1 day was excluded because a broker connection was unhealthy when it was recorded.'
+            : `${excludedCount} days were excluded because a broker connection was unhealthy when they were recorded.`}
+        </p>
+      )}
       <div className="h-56 w-full">
         <ResponsiveContainer width="100%" height="100%">
           <AreaChart data={data} margin={{ top: 4, right: 8, left: 8, bottom: 0 }}>

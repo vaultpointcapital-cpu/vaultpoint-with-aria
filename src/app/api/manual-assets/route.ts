@@ -2,6 +2,7 @@ import { type NextRequest } from 'next/server';
 import { z } from 'zod';
 import { createClient } from '@/lib/supabase/server';
 import { apiError, apiSuccess } from '@/lib/utils/api-response';
+import { invalidateAriaContext } from '@/lib/aria/cache';
 
 const manualAssetSchema = z.object({
   label: z.string().trim().min(1, 'Give this asset a name').max(60),
@@ -69,6 +70,9 @@ export async function POST(request: NextRequest) {
   if (error) {
     return apiError('INTERNAL_ERROR', 'Could not save asset.');
   }
+
+  // A new manual asset changes net worth — invalidate rather than wait out the TTL.
+  await invalidateAriaContext(authData.user.id);
 
   return apiSuccess({ asset: data }, 201);
 }

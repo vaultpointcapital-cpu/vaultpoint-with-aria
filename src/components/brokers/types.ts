@@ -20,5 +20,8 @@ export type BrokerConnectionSummary = Pick<
   | 'sync_status'
   | 'last_synced_at'
   | 'last_error'
+  | 'health'
+  | 'last_error_code'
+  | 'closed_reason'
   | 'created_at'
 >;

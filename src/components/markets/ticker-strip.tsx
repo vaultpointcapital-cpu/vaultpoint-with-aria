@@ -2,7 +2,8 @@
 
 import { useEffect, useState } from 'react';
 import { MarketChip } from '@/components/markets/market-chip';
-import { formatCurrency } from '@/lib/utils/cn';
+import { formatMoneyJSON } from '@/lib/utils/cn';
+import type { MoneyJSON } from '@/lib/money';
 
 const POLL_INTERVAL_MS = 30_000;
 // ~30 minutes of session history at a 30s poll cadence.
@@ -16,7 +17,7 @@ interface TickerPosition {
 }
 
 interface TickerStripProps {
-  initialNetWorth: number;
+  initialNetWorth: MoneyJSON;
   initialPositions: TickerPosition[];
 }
 
@@ -82,7 +83,7 @@ export function TickerStrip({ initialNetWorth, initialPositions }: TickerStripPr
         {/* The single Vault Glow on this page, per design-token rule:
             exactly one, on the most important number here. */}
         <p className="vault-glow font-display text-3xl font-semibold text-text-primary">
-          {formatCurrency(netWorth)}
+          {formatMoneyJSON(netWorth)}
         </p>
       </div>
 

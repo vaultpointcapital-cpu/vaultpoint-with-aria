@@ -51,6 +51,17 @@ def no_real_delivery(monkeypatch):
     monkeypatch.setattr(alert_engine, "deliver_alert_in_app", _fake_deliver_in_app)
 
 
+@pytest.fixture(autouse=True)
+def no_real_alerts_paused_notice(monkeypatch):
+    # Same reasoning as no_real_delivery above — notify_alerts_paused has
+    # its own real behavior covered in test_connection_health_notifications.py;
+    # tests here care whether it was CALLED, not what it does.
+    async def _noop(alert):
+        return None
+
+    monkeypatch.setattr(alert_engine, "notify_alerts_paused", _noop)
+
+
 async def _fake_deliver_email(**kwargs):
     return True
 
@@ -350,3 +361,189 @@ class TestDeliveryAcrossMultipleAccounts:
         # failing if this ever becomes concurrent (elapsed would drop
         # to ~0.3s).
         assert elapsed >= 0.8, f"expected ~3x0.3s sequential delivery, took {elapsed:.2f}s"
+
+
+# ---------------------------------------------------------------------
+# Connection Health & Data Freshness — alert suppression on stale input
+# ---------------------------------------------------------------------
+
+
+def stale_capable_position(**overrides) -> dict:
+    """BTC_POSITION plus the two fields _has_stale_input actually reads:
+    broker_connection_id (to look up the connection's health) and
+    synced_at (the 5-minute staleness threshold)."""
+    base = {**BTC_POSITION, "broker_connection_id": "conn-1", "synced_at": datetime.now(UTC).isoformat()}
+    base.update(overrides)
+    return base
+
+
+def minutes_ago(minutes: float) -> str:
+    return (datetime.now(UTC) - timedelta(minutes=minutes)).isoformat()
+
+
+class TestStaleInputSuppression:
+    async def test_portfolio_wide_alert_suppressed_when_connection_is_unhealthy(self, fake_supabase, monkeypatch):
+        email_calls = []
+
+        async def _tracking_email(**kwargs):
+            email_calls.append(kwargs)
+            return True
+
+        monkeypatch.setattr(alert_engine, "deliver_alert_email", _tracking_email)
+
+        alert = make_alert(condition_type="pnl_pct", operator="above", threshold=5)
+        fake_supabase.select_responses[("positions", "*")] = [stale_capable_position()]
+        fake_supabase.select_responses[("broker_connections", "id, health")] = [
+            {"id": "conn-1", "health": "stale"}
+        ]
+
+        await alert_engine.evaluate_alert(alert)
+
+        history_inserts = fake_supabase.calls_for("alert_history", "insert")
+        assert len(history_inserts) == 1
+        assert history_inserts[0].values["suppressed"] is True
+        assert history_inserts[0].values["suppressed_reason"] == "stale_data"
+        assert email_calls == []  # no delivery attempted for a suppressed evaluation
+        assert fake_supabase.calls_for("alerts", "update") == []  # cooldown/last_triggered_at untouched
+
+    async def test_portfolio_wide_alert_suppressed_when_position_itself_is_stale(self, fake_supabase):
+        # Connection reports healthy, but the position hasn't synced in
+        # over 5 minutes — still suppressed (covers a connection that's
+        # 'healthy' from its last successful cycle but mid-backoff now).
+        alert = make_alert(condition_type="margin_pct", operator="above", threshold=1)
+        fake_supabase.select_responses[("positions", "*")] = [
+            stale_capable_position(synced_at=minutes_ago(10))
+        ]
+        fake_supabase.select_responses[("broker_connections", "id, health")] = [
+            {"id": "conn-1", "health": "healthy"}
+        ]
+        fake_supabase.select_responses[("manual_assets", "value")] = []
+
+        await alert_engine.evaluate_alert(alert)
+
+        history_inserts = fake_supabase.calls_for("alert_history", "insert")
+        assert len(history_inserts) == 1
+        assert history_inserts[0].values["suppressed"] is True
+
+    async def test_fresh_position_on_a_healthy_connection_is_not_suppressed(self, fake_supabase):
+        alert = make_alert(condition_type="pnl_pct", operator="above", threshold=5)
+        fake_supabase.select_responses[("positions", "*")] = [stale_capable_position()]
+        fake_supabase.select_responses[("broker_connections", "id, health")] = [
+            {"id": "conn-1", "health": "healthy"}
+        ]
+        fake_supabase.select_responses[("users", "email")] = [{"email": "user@example.com"}]
+
+        await alert_engine.evaluate_alert(alert)
+
+        history_inserts = fake_supabase.calls_for("alert_history", "insert")
+        assert len(history_inserts) == 1
+        # _fire_alert's own insert (unmodified) never sets suppressed —
+        # the column's DB default (false) covers a normal firing.
+        assert "suppressed" not in history_inserts[0].values
+
+    async def test_price_alert_is_never_suppressed_by_staleness(self, fake_supabase):
+        # Only portfolio-wide conditions check staleness (see
+        # evaluate_alert's own comment) — a price alert still evaluates
+        # normally even against a stale/unhealthy-connection position.
+        alert = make_alert(condition_type="price", symbol="BTCUSDT", operator="above", threshold=64000)
+        fake_supabase.select_responses[("positions", "*")] = [
+            stale_capable_position(synced_at=minutes_ago(30))
+        ]
+        fake_supabase.select_responses[("broker_connections", "id, health")] = [
+            {"id": "conn-1", "health": "auth_failed"}
+        ]
+        fake_supabase.select_responses[("users", "email")] = [{"email": "user@example.com"}]
+
+        await alert_engine.evaluate_alert(alert)
+
+        history_inserts = fake_supabase.calls_for("alert_history", "insert")
+        assert len(history_inserts) == 1
+        assert "suppressed" not in history_inserts[0].values
+
+    async def test_stale_notification_sent_at_cleared_on_next_non_suppressed_evaluation(self, fake_supabase):
+        alert = make_alert(
+            condition_type="pnl_pct", operator="above", threshold=999, stale_notification_sent_at=minutes_ago(20)
+        )
+        fake_supabase.select_responses[("positions", "*")] = [stale_capable_position()]
+        fake_supabase.select_responses[("broker_connections", "id, health")] = [
+            {"id": "conn-1", "health": "healthy"}
+        ]
+
+        await alert_engine.evaluate_alert(alert)
+
+        updates = fake_supabase.calls_for("alerts", "update")
+        assert len(updates) == 1
+        assert updates[0].values == {"stale_notification_sent_at": None}
+
+    async def test_alerts_paused_notice_sent_once_after_15_continuous_minutes_of_suppression(
+        self, fake_supabase, monkeypatch
+    ):
+        notify_calls = []
+
+        async def _tracking_notify(alert):
+            notify_calls.append(alert["id"])
+
+        monkeypatch.setattr(alert_engine, "notify_alerts_paused", _tracking_notify)
+
+        alert = make_alert(condition_type="pnl_pct", operator="above", threshold=5)
+        fake_supabase.select_responses[("positions", "*")] = [stale_capable_position()]
+        fake_supabase.select_responses[("broker_connections", "id, health")] = [
+            {"id": "conn-1", "health": "stale"}
+        ]
+        # Newest-first (desc), matching the real .order('created_at', desc=True)
+        # query — a continuous suppressed streak reaching back 20 minutes.
+        fake_supabase.select_responses[("alert_history", "suppressed, created_at")] = [
+            {"suppressed": True, "created_at": minutes_ago(5)},
+            {"suppressed": True, "created_at": minutes_ago(12)},
+            {"suppressed": True, "created_at": minutes_ago(20)},
+        ]
+
+        await alert_engine.evaluate_alert(alert)
+
+        assert notify_calls == [alert["id"]]
+        alert_updates = fake_supabase.calls_for("alerts", "update")
+        assert len(alert_updates) == 1
+        assert alert_updates[0].values["stale_notification_sent_at"] is not None
+
+    async def test_alerts_paused_notice_not_sent_before_15_minutes_elapse(self, fake_supabase, monkeypatch):
+        notify_calls = []
+
+        async def _tracking_notify(alert):
+            notify_calls.append(alert["id"])
+
+        monkeypatch.setattr(alert_engine, "notify_alerts_paused", _tracking_notify)
+
+        alert = make_alert(condition_type="pnl_pct", operator="above", threshold=5)
+        fake_supabase.select_responses[("positions", "*")] = [stale_capable_position()]
+        fake_supabase.select_responses[("broker_connections", "id, health")] = [
+            {"id": "conn-1", "health": "stale"}
+        ]
+        fake_supabase.select_responses[("alert_history", "suppressed, created_at")] = [
+            {"suppressed": True, "created_at": minutes_ago(5)},
+            {"suppressed": True, "created_at": minutes_ago(10)},
+        ]
+
+        await alert_engine.evaluate_alert(alert)
+
+        assert notify_calls == []
+        assert fake_supabase.calls_for("alerts", "update") == []
+
+    async def test_alerts_paused_notice_not_resent_once_already_notified(self, fake_supabase, monkeypatch):
+        notify_calls = []
+
+        async def _tracking_notify(alert):
+            notify_calls.append(alert["id"])
+
+        monkeypatch.setattr(alert_engine, "notify_alerts_paused", _tracking_notify)
+
+        alert = make_alert(
+            condition_type="pnl_pct", operator="above", threshold=5, stale_notification_sent_at=minutes_ago(5)
+        )
+        fake_supabase.select_responses[("positions", "*")] = [stale_capable_position()]
+        fake_supabase.select_responses[("broker_connections", "id, health")] = [
+            {"id": "conn-1", "health": "stale"}
+        ]
+
+        await alert_engine.evaluate_alert(alert)
+
+        assert notify_calls == []
