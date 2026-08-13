@@ -121,6 +121,7 @@ export async function POST(request: NextRequest) {
             direction: 'deposit',
             amount,
             asset: 'USDT',
+            destination_address: null, // deposits have no destination_address — that field is withdrawal-only
             provider_tx_id: txHash,
             status: 'confirmed',
             confirmed_at: new Date().toISOString(),

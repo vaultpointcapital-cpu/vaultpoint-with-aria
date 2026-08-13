@@ -5,6 +5,7 @@ import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { withdrawRequestSchema, type WithdrawRequestInput } from '@/lib/validations/wallet';
 import { WITHDRAWAL_REVIEW_HOLD_THRESHOLD_NGN } from '@/lib/wallet/limits';
+import { isValidCryptoAddress } from '@/lib/validations/crypto-address';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -55,9 +56,29 @@ export function WithdrawDialog({ open, onOpenChange, wallets, onWithdrawn, onKyc
 
   const currency = watch('currency');
   const watchedAmount = watch('amount');
+  const watchedAddress = watch('destinationDetails.address');
   const destinationType = DESTINATION_TYPE_BY_CURRENCY[currency] ?? 'bank_account';
   const selectedWallet = wallets.find((w) => w.currency === currency);
   const showReviewHold = currency === 'NGN' && Number(watchedAmount) > WITHDRAWAL_REVIEW_HOLD_THRESHOLD_NGN;
+
+  // Client-side-only feedback — spec 4.3.2's actual enforcement gate is
+  // server-side, in POST /api/wallet/withdraw/confirm, using the exact
+  // same isValidCryptoAddress helper. This is just so a malformed
+  // address doesn't cost the user a round trip to find out.
+  const [addressValidity, setAddressValidity] = useState<'unchecked' | 'valid' | 'invalid'>('unchecked');
+  useEffect(() => {
+    if (destinationType !== 'crypto_address' || !watchedAddress) {
+      setAddressValidity('unchecked');
+      return;
+    }
+    let cancelled = false;
+    isValidCryptoAddress('TRC20', watchedAddress).then((valid) => {
+      if (!cancelled) setAddressValidity(valid ? 'valid' : 'invalid');
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [destinationType, watchedAddress]);
 
   useEffect(() => {
     return () => {
@@ -253,12 +274,15 @@ export function WithdrawDialog({ open, onOpenChange, wallets, onWithdrawn, onKyc
               </>
             ) : (
               <div className="space-y-2">
-                <Label htmlFor="address">Destination address</Label>
+                <Label htmlFor="address">Destination address (TRC-20)</Label>
                 <Input id="address" {...register('destinationDetails.address')} />
+                {addressValidity === 'invalid' && (
+                  <p className="text-xs text-warning">This doesn&apos;t look like a valid TRC-20 (TRON) address.</p>
+                )}
               </div>
             )}
 
-            <Button type="submit" className="w-full">
+            <Button type="submit" className="w-full" disabled={destinationType === 'crypto_address' && addressValidity === 'invalid'}>
               Continue
             </Button>
           </form>

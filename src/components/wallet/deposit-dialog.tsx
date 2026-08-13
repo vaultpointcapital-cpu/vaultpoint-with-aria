@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import confetti from 'canvas-confetti';
+import { QRCodeSVG } from 'qrcode.react';
 import { depositInitiateSchema, type DepositInitiateInput } from '@/lib/validations/wallet';
 import { WALLET_LIMITS } from '@/lib/wallet/limits';
 import { Button } from '@/components/ui/button';
@@ -325,6 +326,9 @@ export function DepositDialog({ open, onOpenChange, onKycBlocked, defaultRail, k
                   </span>{' '}
                   ({result.chain}) to:
                 </p>
+                <div className="flex justify-center rounded bg-background p-3">
+                  <QRCodeSVG value={result.address} size={160} marginSize={2} />
+                </div>
                 <p className="break-all rounded bg-background px-3 py-2 font-mono text-xs text-text-primary">{result.address}</p>
                 {result.isPlaceholder && (
                   <p className="text-xs text-warning">

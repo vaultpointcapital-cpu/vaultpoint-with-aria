@@ -55,27 +55,27 @@ async function runReconciliation(request: NextRequest) {
 
   const chainByAccountId = new Map((accountsResult.data ?? []).map((a) => [a.id, a.chain]));
 
-  const ledgerTotals = new Map<string, number>();
+  const ledgerTotals = new Map<string, { chain: string; asset: string; total: number }>();
   for (const tx of transactionsResult.data ?? []) {
     const chain = chainByAccountId.get(tx.custody_account_id);
     if (!chain) continue;
     const key = `${chain}:${tx.asset}`;
     const delta = tx.direction === 'deposit' ? tx.amount : -tx.amount;
-    ledgerTotals.set(key, (ledgerTotals.get(key) ?? 0) + delta);
+    const existing = ledgerTotals.get(key);
+    ledgerTotals.set(key, { chain, asset: tx.asset, total: (existing?.total ?? 0) + delta });
   }
 
   let checked = 0;
   let mismatches = 0;
 
-  for (const [key, ledgerTotal] of ledgerTotals) {
+  for (const { chain, asset, total: ledgerTotal } of ledgerTotals.values()) {
     checked++;
-    const [chain, asset] = key.split(':');
     try {
       const providerBalance = await provider.getAccountBalance({ chain, asset });
       const diff = Math.abs(providerBalance - ledgerTotal);
       if (diff > RECONCILIATION_TOLERANCE) {
         mismatches++;
-        Sentry.captureMessage(`Custody reconciliation mismatch: ${key}`, {
+        Sentry.captureMessage(`Custody reconciliation mismatch: ${chain}:${asset}`, {
           level: 'error',
           tags: { source: 'custody-reconcile', chain, asset },
           extra: { ledgerTotal, providerBalance, diff },

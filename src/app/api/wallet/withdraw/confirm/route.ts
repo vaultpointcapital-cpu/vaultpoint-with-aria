@@ -7,6 +7,7 @@ import { walletProviderForCurrency, walletProviderToDbEnum } from '@/lib/wallet/
 import { createPaystackTransferRecipient, initiatePaystackTransfer } from '@/lib/billing/paystack';
 import { createStripePayout } from '@/lib/billing/stripe';
 import { initiateCryptoPayout } from '@/lib/wallet/web3-adapter';
+import { isValidCryptoAddress } from '@/lib/validations/crypto-address';
 import { apiError, apiSuccess } from '@/lib/utils/api-response';
 
 /**
@@ -72,8 +73,16 @@ export async function POST(request: NextRequest) {
   if (rail === 'paystack' && (!destinationDetails.accountNumber || !destinationDetails.bankCode)) {
     return apiError('VALIDATION_ERROR', 'accountNumber and bankCode are required for a bank withdrawal.');
   }
-  if (rail === 'crypto' && !destinationDetails.address) {
-    return apiError('VALIDATION_ERROR', 'A destination address is required for a crypto withdrawal.');
+  if (rail === 'crypto') {
+    if (!destinationDetails.address) {
+      return apiError('VALIDATION_ERROR', 'A destination address is required for a crypto withdrawal.');
+    }
+    // Spec 4.3.2: "never let a malformed address reach the custody API"
+    // — this is the real enforcement gate; withdraw-dialog.tsx's live
+    // check is only UX, using this exact same helper.
+    if (!(await isValidCryptoAddress('TRC20', destinationDetails.address))) {
+      return apiError('VALIDATION_ERROR', 'This does not look like a valid TRC-20 (TRON) destination address.');
+    }
   }
 
   const serviceClient = createServiceClient();
