@@ -1,4 +1,5 @@
 import { createServiceClient } from '@/lib/supabase/server';
+import { applyValueLedgerEvent } from '@/lib/value-ledger/events';
 import type { KycTier, KycTierLimits, WalletKycTierVerification, WalletKycTierVerificationStatus } from '@/types/database';
 
 /**
@@ -142,6 +143,16 @@ export async function applyTierDecision(params: {
   if (tierError) {
     throw new Error(`Failed to update users.kyc_tier for ${existing.user_id}: ${tierError.message}`);
   }
+
+  // Value Ledger — feeds time_to_first_value_days. Keyed to this specific
+  // verification attempt, so a re-verified/replayed decision can't double-emit.
+  await applyValueLedgerEvent(supabase, {
+    userId: existing.user_id,
+    eventName: 'kyc_tier_upgraded',
+    idempotencyKey: `kyc_tier_upgraded:${existing.id}`,
+    properties: { tier: existing.tier },
+    source: 'kyc',
+  });
 }
 
 export async function getKycTierStatus(userId: string): Promise<{

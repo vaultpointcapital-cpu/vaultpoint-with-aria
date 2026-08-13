@@ -126,6 +126,21 @@ class FakeQuery:
         return FakeResult(None)
 
 
+class FakeRpc:
+    """One `supabase.rpc(fn, params)....execute()` call — same
+    record-and-answer shape as FakeQuery, for value_ledger_apply_event and
+    any other RPC call sites (wallet_apply_transaction, etc.)."""
+
+    def __init__(self, fn_name: str, params: dict | None, client: "FakeSupabase"):
+        self.fn_name = fn_name
+        self.params = params
+        self.client = client
+
+    def execute(self):
+        self.client.rpc_calls.append(self)
+        return FakeResult(self.client.rpc_responses.get(self.fn_name, []))
+
+
 class FakeSupabase:
     """Stand-in for the real supabase-py Client. `select_responses` maps
     (table_name, columns_string) -> the `.data` a matching select should
@@ -137,9 +152,14 @@ class FakeSupabase:
         self.calls: list[FakeQuery] = []
         self.select_responses: dict[tuple, list] = {}
         self.insert_responses: dict[str, list] = {}
+        self.rpc_calls: list[FakeRpc] = []
+        self.rpc_responses: dict[str, list] = {}
 
     def table(self, name: str) -> FakeQuery:
         return FakeQuery(name, self)
+
+    def rpc(self, fn_name: str, params: dict | None = None) -> FakeRpc:
+        return FakeRpc(fn_name, params, self)
 
     def calls_for(self, table_name: str, op: str | None = None) -> list[FakeQuery]:
         return [c for c in self.calls if c.table_name == table_name and (op is None or c.op == op)]

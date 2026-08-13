@@ -35,9 +35,19 @@ export type AriaMessageType =
   | 'IDLE_CHECK_IN'
   | 'RISK_CHECK'
   | 'COMMUNITY_NUDGE';
-// Aria Pantheon. Matches
-// supabase/migrations/20260813000000_add_aria_findings.sql exactly.
-export type AriaFindingSourceAgent = 'argus' | 'plutus' | 'hermes' | 'mnemosyne' | 'nike' | 'themis';
+// Aria Pantheon. Matches supabase/migrations/20260813000000_add_aria_findings.sql
+// as extended by 20260814000003_extend_aria_findings_for_scanner_alerts.sql
+// (adds 'aria_scanner'/'trade_setup_alert' for the Decision Gate's
+// manual-account alert durability path — see that migration's comment for
+// why those findings are always severity='caution', never proactive-eligible).
+export type AriaFindingSourceAgent =
+  | 'argus'
+  | 'plutus'
+  | 'hermes'
+  | 'mnemosyne'
+  | 'nike'
+  | 'themis'
+  | 'aria_scanner';
 export type AriaFindingType =
   | 'loss_warning'
   | 'profit_alert'
@@ -45,11 +55,19 @@ export type AriaFindingType =
   | 'portfolio_review'
   | 'market_update'
   | 'risk_check'
-  | 'community_nudge';
+  | 'community_nudge'
+  | 'trade_setup_alert';
 export type AriaFindingSeverity = 'info' | 'caution' | 'warning' | 'critical';
 export type AriaFindingStatus = 'new' | 'acknowledged' | 'delivered' | 'dismissed' | 'expired';
 // Per-position dedup state, supabase/migrations/20260813000001_add_positions_pantheon_severity.sql.
 export type PantheonSeverityBucket = 'none' | 'caution' | 'warning' | 'critical';
+// Tier Contract — What Each Tier Promises. tier_name is DELIBERATELY its
+// own vocabulary, not SubscriptionTier and not managed_accounts.tier — see
+// supabase/migrations/20260815000002_add_tier_contracts.sql's header
+// comment for why these three tier concepts are not unified.
+export type TierName = 'free' | 'pro' | 'elite' | 'managed';
+export type TierContractStatus = 'active' | 'superseded';
+export type CommitmentType = 'feature_access' | 'outcome' | 'sla' | 'limit';
 export type PaymentProvider = 'stripe' | 'paystack' | 'flutterwave';
 export type SubscriptionStatus = 'active' | 'past_due' | 'cancelled' | 'trialing';
 export type MtPlatform = 'mt4' | 'mt5';
@@ -442,6 +460,48 @@ export type WalletKycTierVerification = {
   updated_at: string;
 };
 
+// Value Ledger — see 20260815000000_add_value_ledger.sql. Isolated
+// module: written only via value_ledger_apply_event() (events) or the
+// nightly rollup job (rollups), read only by service-role contexts (the
+// admin dashboard, the rollup job itself).
+export type ValueLedgerEvent = {
+  id: string;
+  user_id: string;
+  event_name: string;
+  properties: Record<string, unknown>;
+  source: string;
+  idempotency_key: string;
+  created_at: string;
+};
+
+export type ChurnRiskLevel = 'low' | 'medium' | 'high';
+
+export type ValueLedgerRollup = {
+  id: string;
+  user_id: string;
+  rollup_date: string;
+  subscription_tier: string;
+  pod_goal_hits_30d: number;
+  pod_pace_delta_pct: number | null;
+  alerts_fired_30d: number;
+  alerts_acted_on_30d: number;
+  alert_pnl_saved_30d: number | null;
+  aria_recommendation_winrate_30d: number | null;
+  aria_recommendation_count_30d: number;
+  time_to_first_value_days: number | null;
+  feature_adoption_rate: number;
+  value_score: number;
+  tier_price_normalized: number | null;
+  value_to_price_ratio: number | null;
+  churn_risk_score: number;
+  churn_risk_level: ChurnRiskLevel;
+  churn_risk_reasons: string[];
+  upsell_candidate: boolean;
+  managed_account_net_return_30d: number | null;
+  fee_to_return_ratio_30d: number | null;
+  created_at: string;
+};
+
 export type Alert = {
   id: string;
   user_id: string;
@@ -509,6 +569,12 @@ export type Subscription = {
   // cleared to null on recovery to active/trialing). Grants a grace
   // period before access is revoked — see get-user-tier.ts.
   past_due_since: string | null;
+  // The tier_contracts row active at signup or last renewal — stamped by
+  // snapshotTierContractOnRenewal() (src/lib/tier-contracts/snapshot.ts),
+  // never by a cancel/past_due webhook branch. Null for a row predating
+  // 20260815000002_add_tier_contracts.sql or written before seed data
+  // existed for its tier.
+  tier_contract_id: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -623,6 +689,12 @@ export type ManagedAccount = {
   starting_capital: number | null;
   current_balance: number | null;
   requires_disclosure_reconfirmation: boolean;
+  // The active tier_name='managed' tier_contracts row, stamped once when
+  // status transitions to 'active' in POST /api/managed-accounts/:id/fund
+  // — NOT gated through subscriptions, since a Managed Account enrollment
+  // is orthogonal to subscription_tier. See
+  // 20260815000002_add_tier_contracts.sql.
+  tier_contract_id: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -751,6 +823,46 @@ export type ManagedAccountAuditLogEntry = {
   event_type: ManagedAccountAuditEventType;
   event_data: Record<string, unknown>;
   created_at: string;
+};
+
+// Managed Account Dispute & Escalation Policy.
+// Matches supabase/migrations/20260816000000_add_dispute_escalation_policy.sql.
+// DisputeTier (1-4, escalation level) is NOT the same vocabulary as
+// ManagedAccount['tier'] ('bronze'/'silver'/'gold') — do not confuse the two.
+export type DisputeTier = 1 | 2 | 3 | 4;
+export type DisputeStatus = 'open' | 'resolved' | 'escalated' | 'closed';
+export type DisputeCategory = 'fee' | 'performance' | 'recommendation' | 'other';
+
+export type Dispute = {
+  id: string;
+  parent_dispute_id: string | null;
+  user_id: string;
+  managed_account_id: string | null;
+  managed_sub_account_id: string | null;
+  tier: DisputeTier;
+  status: DisputeStatus;
+  category: DisputeCategory;
+  linked_event_ids: string[];
+  opened_at: string;
+  acknowledged_at: string | null;
+  resolved_at: string | null;
+  resolution_summary: string | null;
+  resolution_amount_ngn: number | null;
+  reviewer: string;
+  escalated_from_tier: DisputeTier | null;
+  escalation_reason: string | null;
+  sla_alert_sent_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type DisputeSettings = {
+  id: 1;
+  tier2_support_owner_name: string | null;
+  tier3_max_authorization_ngn: number | null;
+  tier4_legal_contact: string | null;
+  updated_at: string;
+  updated_by: string | null;
 };
 
 // Step-Up Auth, Ticket 1 — registered push-notification device tokens.
@@ -928,6 +1040,40 @@ export type AriaFinding = {
   created_at: string;
   acknowledged_at: string | null;
   delivered_at: string | null;
+};
+
+// Tier Contract — What Each Tier Promises. Matches
+// supabase/migrations/20260815000002_add_tier_contracts.sql exactly.
+// Written only via create_tier_contract_version() — no direct TS
+// insert/update path, ever (see that migration's comment on why an active
+// row is never updated in place).
+export type TierContract = {
+  id: string;
+  tier_name: TierName;
+  version: number;
+  effective_date: string;
+  price_ngn: number | null;
+  price_usd: number | null;
+  status: TierContractStatus;
+  created_by: string | null;
+  change_reason: string | null;
+  // Null = not yet reviewed by Legal/Compliance. Only meaningfully gates
+  // tier_name='managed' in v1 — see the migration's header comment.
+  compliance_signoff_at: string | null;
+  created_at: string;
+};
+
+export type TierCommitment = {
+  id: string;
+  tier_contract_id: string;
+  commitment_key: string;
+  commitment_description: string;
+  commitment_type: CommitmentType;
+  measurable: boolean;
+  // Free text, NOT FK-validated — no Value Ledger metric registry exists
+  // anywhere in this codebase yet. See the migration's header comment.
+  metric_key: string | null;
+  created_at: string;
 };
 
 // Signal Mode. Matches supabase/migrations/20260718000000_add_signal_mode.sql
@@ -1275,13 +1421,36 @@ export interface Database {
         Update: never; // append-only
         Relationships: [];
       };
+      value_ledger_events: {
+        Row: ValueLedgerEvent;
+        // Only ever written via value_ledger_apply_event() — no direct
+        // insert policy for any role, matching kyc_webhook_events' posture.
+        Insert: never;
+        Update: never;
+        Relationships: [];
+      };
+      value_ledger_rollups: {
+        Row: ValueLedgerRollup;
+        // Only ever written by the nightly rollup job's service-role
+        // client — no client insert/update policy.
+        Insert: Omit<ValueLedgerRollup, 'id' | 'created_at'>;
+        Update: Partial<Omit<ValueLedgerRollup, 'id' | 'user_id' | 'rollup_date' | 'created_at'>>;
+        Relationships: [];
+      };
       subscriptions: {
         Row: Subscription;
         // paystack_authorization_code starts null on every insert (the
         // checkout-initiation routes never have it yet) — only the
         // Paystack webhook's later UPDATE ever sets it, on charge.success.
-        Insert: Omit<Subscription, 'id' | 'created_at' | 'updated_at' | 'paystack_authorization_code'> & {
+        // tier_contract_id is the same shape: no insert call site ever
+        // passes it (it's stamped by a later UPDATE via
+        // snapshotTierContractOnRenewal, after the row already exists).
+        Insert: Omit<
+          Subscription,
+          'id' | 'created_at' | 'updated_at' | 'paystack_authorization_code' | 'tier_contract_id'
+        > & {
           paystack_authorization_code?: string | null;
+          tier_contract_id?: string | null;
         };
         Update: Partial<Omit<Subscription, 'id' | 'user_id'>>;
         Relationships: [];
@@ -1319,7 +1488,12 @@ export interface Database {
       };
       managed_accounts: {
         Row: ManagedAccount;
-        Insert: Omit<ManagedAccount, 'id' | 'created_at' | 'updated_at'>;
+        // tier_contract_id starts null on every insert — the enrollment
+        // creation route never has it yet, only POST
+        // .../:id/fund's later UPDATE (when status -> 'active') sets it.
+        Insert: Omit<ManagedAccount, 'id' | 'created_at' | 'updated_at' | 'tier_contract_id'> & {
+          tier_contract_id?: string | null;
+        };
         Update: Partial<Omit<ManagedAccount, 'id' | 'user_id'>>;
         Relationships: [];
       };
@@ -1372,6 +1546,21 @@ export interface Database {
         Row: ManagedAccountAuditLogEntry;
         Insert: Omit<ManagedAccountAuditLogEntry, 'id' | 'created_at'>;
         Update: never; // append-only
+        Relationships: [];
+      };
+      // Written only via each dispute route's own service-role client
+      // after its own auth check — no client insert/update policy exists
+      // (see the migration's RLS comment).
+      disputes: {
+        Row: Dispute;
+        Insert: Omit<Dispute, 'id' | 'created_at' | 'updated_at'>;
+        Update: Partial<Omit<Dispute, 'id' | 'user_id' | 'created_at'>>;
+        Relationships: [];
+      };
+      dispute_settings: {
+        Row: DisputeSettings;
+        Insert: never; // singleton row, seeded by the migration itself
+        Update: Partial<Omit<DisputeSettings, 'id' | 'updated_at'>>;
         Relationships: [];
       };
       user_devices: {
@@ -1495,6 +1684,30 @@ export interface Database {
         Update: Partial<Pick<AriaFinding, 'status' | 'acknowledged_at' | 'delivered_at'>>;
         Relationships: [];
       };
+      // Written only via create_tier_contract_version() (Postgres
+      // function) — never a direct TS insert/update. An active row is
+      // never updated in place; a new version is always a new row. See
+      // 20260815000002_add_tier_contracts.sql.
+      tier_contracts: {
+        Row: TierContract;
+        Insert: never;
+        Update: never;
+        Relationships: [];
+      };
+      tier_commitments: {
+        Row: TierCommitment;
+        Insert: never;
+        Update: never;
+        Relationships: [
+          {
+            foreignKeyName: 'tier_commitments_tier_contract_id_fkey';
+            columns: ['tier_contract_id'];
+            isOneToOne: false;
+            referencedRelation: 'tier_contracts';
+            referencedColumns: ['id'];
+          },
+        ];
+      };
       // Written only by the founder/signal desk via service-role (no
       // Next.js insert/update path exists — see the Signal Mode
       // execution-layer summary). RLS grants `authenticated` SELECT only.
@@ -1537,6 +1750,9 @@ export interface Database {
       // Args grew a p_currency param in 20260804000000_add_money_currency_layer.sql
       // (currency-safety check, no conversion) — signature was dropped and
       // recreated, not overloaded.
+      // Return shape grew goal_just_hit/target_amount/pod_deadline/
+      // pod_created_at in 20260815000001_instrument_pod_goal_hit.sql —
+      // lets the calling route emit a value_ledger_events pod_goal_hit row.
       contribute_to_pod: {
         Args: {
           p_pod_id: string;
@@ -1548,6 +1764,33 @@ export interface Database {
         Returns: {
           contribution_id: string;
           new_current_amount: number;
+          goal_just_hit: boolean;
+          target_amount: number;
+          pod_deadline: string | null;
+          pod_created_at: string;
+        }[];
+      };
+      // supabase/migrations/20260815000002_add_tier_contracts.sql — the
+      // only sanctioned write path for a new tier_contract version.
+      create_tier_contract_version: {
+        Args: {
+          p_tier_name: string;
+          p_price_ngn: number | null;
+          p_price_usd: number | null;
+          p_effective_date: string;
+          p_created_by: string | null;
+          p_change_reason: string;
+          p_commitments: {
+            commitment_key: string;
+            commitment_description: string;
+            commitment_type: CommitmentType;
+            measurable: boolean;
+            metric_key: string | null;
+          }[];
+        };
+        Returns: {
+          tier_contract_id: string;
+          version: number;
         }[];
       };
       // supabase/migrations/20260802000000_add_wallet.sql
@@ -1579,6 +1822,20 @@ export interface Database {
           allowed: boolean;
           reason_code: string | null;
           message: string | null;
+        }[];
+      };
+      // supabase/migrations/20260815000000_add_value_ledger.sql
+      value_ledger_apply_event: {
+        Args: {
+          p_user_id: string;
+          p_event_name: string;
+          p_idempotency_key: string;
+          p_properties?: Record<string, unknown>;
+          p_source?: string;
+        };
+        Returns: {
+          event_id: string;
+          inserted: boolean;
         }[];
       };
       // supabase/migrations/20260726000002_add_step_up_approvals.sql

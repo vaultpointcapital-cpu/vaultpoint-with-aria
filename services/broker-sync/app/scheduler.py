@@ -8,6 +8,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from .alert_engine import evaluate_all_alerts as _evaluate_all_alerts
 from .config import settings
+from .decision_gate.service import evaluate_decision_gate as _evaluate_decision_gate
 from .fx_service import refresh_fx_rates as _refresh_fx_rates
 from .managed_mode import evaluate_managed_mode as _evaluate_managed_mode
 from .pantheon.hermes import run_hermes_scan as _run_hermes_scan
@@ -15,6 +16,7 @@ from .pantheon.mnemosyne import mnemosyne_daily as _mnemosyne_daily
 from .pantheon.mnemosyne import mnemosyne_weekly as _mnemosyne_weekly
 from .redis_cache import (
     acquire_alert_lock,
+    acquire_decision_gate_lock,
     acquire_fx_refresh_lock,
     acquire_hermes_scan_lock,
     acquire_managed_mode_lock,
@@ -22,8 +24,11 @@ from .redis_cache import (
     acquire_mnemosyne_weekly_lock,
     acquire_poll_lock,
     acquire_scan_lock,
+    acquire_signal_scoring_lock,
+    acquire_value_ledger_rollup_lock,
     acquire_wallet_reconciliation_lock,
     record_alert_evaluation_heartbeat,
+    record_decision_gate_heartbeat,
     record_fx_refresh_heartbeat,
     record_hermes_scan_heartbeat,
     record_managed_mode_evaluation_heartbeat,
@@ -31,8 +36,11 @@ from .redis_cache import (
     record_mnemosyne_weekly_heartbeat,
     record_poll_heartbeat,
     record_scan_heartbeat,
+    record_signal_scoring_heartbeat,
+    record_value_ledger_rollup_heartbeat,
     record_wallet_reconciliation_heartbeat,
     release_alert_lock,
+    release_decision_gate_lock,
     release_fx_refresh_lock,
     release_hermes_scan_lock,
     release_managed_mode_lock,
@@ -40,11 +48,15 @@ from .redis_cache import (
     release_mnemosyne_weekly_lock,
     release_poll_lock,
     release_scan_lock,
+    release_signal_scoring_lock,
+    release_value_ledger_rollup_lock,
     release_wallet_reconciliation_lock,
 )
 from .scanner.service import scan_setups as _scan_setups
+from .signal_engine.service import score_pending_candidates as _score_pending_candidates
 from .supabase_client import get_service_client
 from .sync_service import BROKER_CLIENTS, sync_connection
+from .value_ledger_rollup import compute_rollups as _compute_value_ledger_rollups
 from .wallet_reconciliation import reconcile_wallet_transactions as _reconcile_wallet_transactions
 
 logger = logging.getLogger("broker_sync")
@@ -285,6 +297,32 @@ async def run_mnemosyne_weekly() -> None:
         await release_mnemosyne_weekly_lock()
 
 
+async def run_value_ledger_rollup() -> None:
+    """Same lock/heartbeat/logging shape as the other jobs, cron-triggered
+    (needs wall-clock alignment, same reasoning as Mnemosyne — see its
+    module docstring). Registered 10 minutes after run_mnemosyne_daily so
+    this job's own Aria-finding write doesn't race Mnemosyne's daily
+    narration for the same user."""
+    if not await acquire_value_ledger_rollup_lock():
+        logger.info("Another instance already holds the value-ledger-rollup lock — skipping this run.")
+        return
+
+    started_at = time.monotonic()
+    logger.info("run_value_ledger_rollup: started")
+
+    try:
+        await _compute_value_ledger_rollups()
+        await record_value_ledger_rollup_heartbeat()
+    except Exception:
+        logger.exception("run_value_ledger_rollup: failed")
+        sentry_sdk.capture_exception()
+        raise
+    finally:
+        duration_seconds = time.monotonic() - started_at
+        logger.info("run_value_ledger_rollup: finished in %.2fs", duration_seconds)
+        await release_value_ledger_rollup_lock()
+
+
 async def scan_setups() -> None:
     """Same lock/heartbeat/logging shape as the other jobs — see
     scanner/service.py for the actual candle fetch + SMC rules engine
@@ -307,6 +345,54 @@ async def scan_setups() -> None:
         duration_seconds = time.monotonic() - started_at
         logger.info("scan_setups: finished in %.2fs", duration_seconds)
         await release_scan_lock()
+
+
+async def score_signals() -> None:
+    """Same lock/heartbeat/logging shape as the other jobs — see
+    signal_engine/service.py for the actual Claude scoring call (PRD
+    Sprint 2, component 4B)."""
+    if not await acquire_signal_scoring_lock():
+        logger.info("Another instance already holds the signal scoring lock — skipping this cycle.")
+        return
+
+    started_at = time.monotonic()
+    logger.info("score_signals: started")
+
+    try:
+        await _score_pending_candidates()
+        await record_signal_scoring_heartbeat()
+    except Exception:
+        logger.exception("score_signals: failed")
+        sentry_sdk.capture_exception()
+        raise
+    finally:
+        duration_seconds = time.monotonic() - started_at
+        logger.info("score_signals: finished in %.2fs", duration_seconds)
+        await release_signal_scoring_lock()
+
+
+async def evaluate_decision_gate() -> None:
+    """Same lock/heartbeat/logging shape as the other jobs — see
+    decision_gate/service.py for the actual per-account routing (PRD
+    Sprint 3, component 4C)."""
+    if not await acquire_decision_gate_lock():
+        logger.info("Another instance already holds the decision gate lock — skipping this cycle.")
+        return
+
+    started_at = time.monotonic()
+    logger.info("evaluate_decision_gate: started")
+
+    try:
+        await _evaluate_decision_gate()
+        await record_decision_gate_heartbeat()
+    except Exception:
+        logger.exception("evaluate_decision_gate: failed")
+        sentry_sdk.capture_exception()
+        raise
+    finally:
+        duration_seconds = time.monotonic() - started_at
+        logger.info("evaluate_decision_gate: finished in %.2fs", duration_seconds)
+        await release_decision_gate_lock()
 
 
 def start_scheduler() -> None:
@@ -376,10 +462,34 @@ def start_scheduler() -> None:
         max_instances=1,
     )
     scheduler.add_job(
+        run_value_ledger_rollup,
+        "cron",
+        hour=0,
+        minute=10,  # after run_mnemosyne_daily so its own Aria-finding write doesn't race Mnemosyne's
+        id="run_value_ledger_rollup",
+        max_instances=1,
+    )
+    scheduler.add_job(
         scan_setups,
         "interval",
         seconds=settings.scanner_interval_seconds,
         id="scan_setups",
+        next_run_time=datetime.now(),
+        max_instances=1,
+    )
+    scheduler.add_job(
+        score_signals,
+        "interval",
+        seconds=settings.signal_engine_interval_seconds,
+        id="score_signals",
+        next_run_time=datetime.now(),
+        max_instances=1,
+    )
+    scheduler.add_job(
+        evaluate_decision_gate,
+        "interval",
+        seconds=settings.decision_gate_interval_seconds,
+        id="evaluate_decision_gate",
         next_run_time=datetime.now(),
         max_instances=1,
     )
@@ -388,7 +498,8 @@ def start_scheduler() -> None:
         "Scheduler started — polling every %ss, evaluating alerts every %ss, "
         "evaluating managed mode every %ss, reconciling wallet transactions every %ss, "
         "refreshing FX rates every %ss, scanning Hermes opportunities every %ss, "
-        "Mnemosyne daily at 00:00 and weekly Monday 00:05, scanning SMC setups every %ss.",
+        "Mnemosyne daily at 00:00 and weekly Monday 00:05, scanning SMC setups every %ss, "
+        "scoring signals every %ss, evaluating the decision gate every %ss.",
         settings.poll_interval_seconds,
         settings.alert_evaluation_interval_seconds,
         settings.managed_mode_evaluation_interval_seconds,
@@ -396,4 +507,6 @@ def start_scheduler() -> None:
         settings.fx_refresh_interval_seconds,
         settings.hermes_scan_interval_seconds,
         settings.scanner_interval_seconds,
+        settings.signal_engine_interval_seconds,
+        settings.decision_gate_interval_seconds,
     )

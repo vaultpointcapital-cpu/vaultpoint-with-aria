@@ -1,8 +1,9 @@
 import { type NextRequest } from 'next/server';
-import { createClient } from '@/lib/supabase/server';
+import { createClient, createServiceClient } from '@/lib/supabase/server';
 import { contributeToPodSchema } from '@/lib/validations/pods';
 import { apiError, apiSuccess } from '@/lib/utils/api-response';
 import { invalidateAriaContext } from '@/lib/aria/cache';
+import { applyValueLedgerEvent } from '@/lib/value-ledger/events';
 
 /**
  * POST /api/pods/:id/contribute
@@ -74,9 +75,37 @@ export async function POST(
     return apiError('INTERNAL_ERROR', 'Could not log contribution.');
   }
 
-  const result = data as { contribution_id: string; new_current_amount: number };
+  const result = data as {
+    contribution_id: string;
+    new_current_amount: number;
+    goal_just_hit: boolean;
+    target_amount: number;
+    pod_deadline: string | null;
+    pod_created_at: string;
+  };
 
   await invalidateAriaContext(authData.user.id);
+
+  // Value Ledger — best-effort side effect, same non-blocking posture as
+  // invalidateAriaContext above: a ledger-write failure must never fail
+  // the user's contribution. Idempotency key is pod-scoped (not
+  // contribution-scoped) so this fires exactly once per pod, on the
+  // crossing itself.
+  if (result.goal_just_hit) {
+    const service = createServiceClient();
+    await applyValueLedgerEvent(service, {
+      userId: authData.user.id,
+      eventName: 'pod_goal_hit',
+      idempotencyKey: `pod_goal_hit:${params.id}`,
+      properties: {
+        pod_id: params.id,
+        target_amount: result.target_amount,
+        final_amount: result.new_current_amount,
+        deadline: result.pod_deadline,
+      },
+      source: 'pods_api',
+    });
+  }
 
   return apiSuccess(
     {

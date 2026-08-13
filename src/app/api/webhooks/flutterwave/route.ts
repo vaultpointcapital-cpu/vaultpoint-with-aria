@@ -3,6 +3,7 @@ import { createServiceClient } from '@/lib/supabase/server';
 import { verifyFlutterwaveSignature, tierFromFlutterwavePlanId } from '@/lib/billing/flutterwave';
 import { syncUserSubscriptionTier } from '@/lib/billing/get-user-tier';
 import { claimWebhookEventForProcessing, markWebhookEventCompleted, markWebhookEventFailed } from '@/lib/billing/webhook-log';
+import { snapshotTierContractOnRenewal } from '@/lib/tier-contracts/snapshot';
 
 /**
  * NOT YET VERIFIED against a real webhook delivery from Flutterwave —
@@ -82,7 +83,7 @@ export async function POST(request: NextRequest) {
         const { data: existing, error: selectError } = customerEmail
           ? await supabase
               .from('subscriptions')
-              .select('id, status')
+              .select('id, status, tier')
               .eq('payment_provider', 'flutterwave')
               .eq('provider_customer_id', customerEmail)
               .maybeSingle()
@@ -122,6 +123,12 @@ export async function POST(request: NextRequest) {
         }
 
         await syncUserSubscriptionTier(supabase, userId);
+        // Tier Contract — snapshots which tier_contract version was active
+        // at this renewal/signup, never "whatever's active today". Only
+        // on a real successful charge, never on a failed one.
+        if (succeeded) {
+          await snapshotTierContractOnRenewal(supabase, userId, tier ?? existing?.tier ?? 'pro');
+        }
         break;
       }
 

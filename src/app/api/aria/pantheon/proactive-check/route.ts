@@ -55,6 +55,14 @@ const MESSAGE_TYPE_BY_FINDING_TYPE: Record<AriaFindingType, AriaMessageType> = {
   market_update: 'MARKET_UPDATE',
   risk_check: 'RISK_CHECK',
   community_nudge: 'COMMUNITY_NUDGE',
+  // Unreachable in practice: the Decision Gate (app/decision_gate/service.py)
+  // always writes trade_setup_alert findings at severity='caution', which
+  // getPendingProactiveFindingsByUser's own query filters to
+  // warning/critical only — this entry exists purely to satisfy
+  // Record<AriaFindingType, AriaMessageType>'s exhaustiveness, not because
+  // this route is expected to ever deliver one. See
+  // 20260814000003_extend_aria_findings_for_scanner_alerts.sql for why.
+  trade_setup_alert: 'BUY_SIGNAL',
 };
 
 const SEVERITY_RANK: Record<AriaFinding['severity'], number> = { critical: 3, warning: 2, caution: 1, info: 0 };

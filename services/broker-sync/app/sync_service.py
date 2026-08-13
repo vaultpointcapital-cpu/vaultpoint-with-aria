@@ -22,6 +22,7 @@ from .redis_cache import cache_positions
 from .signal_outcomes import detect_and_record_outcomes
 from .supabase_client import get_service_client
 from .sync_outcomes import SyncOutcome, classify_error
+from .value_ledger import emit_position_closed_events
 
 logger = logging.getLogger("broker_sync")
 
@@ -156,6 +157,7 @@ async def sync_connection(connection: dict) -> None:
                 "position sync continues regardless.",
                 connection_id,
             )
+        await emit_position_closed_events(supabase, connection, stale)
 
     # Prop-account breach heuristic (§ plan) — get_balance() is called
     # specifically for simulated connections because a closed/breached
@@ -339,7 +341,9 @@ def _get_stale_positions(supabase, connection_id: str, rows: list[dict]) -> list
 
     existing = (
         supabase.table("positions")
-        .select("id, symbol, side, synced_at")
+        # size added for value_ledger's position_closed event payload
+        # (app/value_ledger.py) — everything else here is unchanged.
+        .select("id, symbol, side, size, synced_at")
         .eq("broker_connection_id", connection_id)
         .execute()
     )

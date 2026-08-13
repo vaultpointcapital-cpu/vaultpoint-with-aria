@@ -1,5 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { createClient } from '@/lib/supabase/server';
+import { applyValueLedgerEvent } from '@/lib/value-ledger/events';
 import type { Database, SubscriptionTier } from '@/types/database';
 
 // A renewal decline doesn't revoke access immediately — the user keeps
@@ -56,7 +57,23 @@ export async function syncUserSubscriptionTier(
   supabase: SupabaseClient<Database>,
   userId: string
 ): Promise<SubscriptionTier> {
+  const { data: existing } = await supabase.from('users').select('subscription_tier').eq('id', userId).single();
+  const previousTier = existing?.subscription_tier;
+
   const tier = await computeUserTier(supabase, userId);
   await supabase.from('users').update({ subscription_tier: tier }).eq('id', userId);
+
+  // Value Ledger — feeds tier_conversion_rate. Date-scoped idempotency key
+  // so a same-day retried webhook delivery is a natural no-op.
+  if (previousTier && previousTier !== tier) {
+    await applyValueLedgerEvent(supabase, {
+      userId,
+      eventName: 'tier_changed',
+      idempotencyKey: `tier_changed:${userId}:${previousTier}-${tier}:${new Date().toISOString().slice(0, 10)}`,
+      properties: { fromTier: previousTier, toTier: tier },
+      source: 'billing',
+    });
+  }
+
   return tier;
 }

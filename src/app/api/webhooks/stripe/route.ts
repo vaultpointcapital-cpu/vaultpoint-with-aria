@@ -4,6 +4,8 @@ import { createServiceClient } from '@/lib/supabase/server';
 import { getStripeClient, tierFromStripePriceId } from '@/lib/billing/stripe';
 import { syncUserSubscriptionTier } from '@/lib/billing/get-user-tier';
 import { claimWebhookEventForProcessing, markWebhookEventCompleted, markWebhookEventFailed } from '@/lib/billing/webhook-log';
+import { applyValueLedgerEvent } from '@/lib/value-ledger/events';
+import { snapshotTierContractOnRenewal } from '@/lib/tier-contracts/snapshot';
 
 // Next.js App Router route handlers never auto-parse the body (unlike the
 // Pages Router's api routes), so request.text() below already gives the
@@ -89,6 +91,9 @@ export async function POST(request: NextRequest) {
         });
         if (insertError) throw insertError;
         await syncUserSubscriptionTier(supabase, userId);
+        // Tier Contract — snapshots which tier_contract version was active
+        // at this signup, never "whatever's active today".
+        await snapshotTierContractOnRenewal(supabase, userId, tier ?? 'pro');
         break;
       }
 
@@ -112,11 +117,16 @@ export async function POST(request: NextRequest) {
             ...(newStatus === 'active' || newStatus === 'trialing' ? { past_due_since: null } : {}),
           })
           .eq('provider_subscription_id', subscription.id)
-          .select('user_id');
+          .select('user_id, tier');
         if (error) throw error;
 
         for (const row of updated ?? []) {
           await syncUserSubscriptionTier(supabase, row.user_id);
+          // Only on the same real-activation condition already used above
+          // (active/trialing) — never on a status that isn't a real renewal.
+          if (newStatus === 'active' || newStatus === 'trialing') {
+            await snapshotTierContractOnRenewal(supabase, row.user_id, row.tier);
+          }
         }
         break;
       }
@@ -156,6 +166,16 @@ export async function POST(request: NextRequest) {
           p_metadata: {},
         });
         if (error) throw error;
+        // Value Ledger — feeds time_to_first_value_days. Reuses the
+        // wallet transaction's own idempotency key, so a replayed webhook
+        // delivery naturally no-ops here too.
+        await applyValueLedgerEvent(supabase, {
+          userId,
+          eventName: 'wallet_deposit',
+          idempotencyKey: `wallet_deposit:${paymentIntent.id}`,
+          properties: { provider: 'stripe', currency: paymentIntent.currency.toUpperCase() },
+          source: 'wallet',
+        });
         break;
       }
 
@@ -185,6 +205,17 @@ export async function POST(request: NextRequest) {
             .eq('id', row.id);
           if (error) throw error;
           await syncUserSubscriptionTier(supabase, row.user_id);
+          // Value Ledger — feeds churn_risk_score's "declined/failed
+          // payment" signal. Keyed to this webhook delivery + row, not
+          // date-scoped like tier_changed, since each decline is its own
+          // distinct event even within the same day.
+          await applyValueLedgerEvent(supabase, {
+            userId: row.user_id,
+            eventName: 'payment_failed',
+            idempotencyKey: `payment_failed:${claim.eventRowId}:${row.id}`,
+            properties: { provider: 'stripe' },
+            source: 'billing_webhook',
+          });
         }
         break;
       }

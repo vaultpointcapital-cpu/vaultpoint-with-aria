@@ -25,6 +25,12 @@ LAST_MNEMOSYNE_WEEKLY_KEY = "health:last_mnemosyne_weekly"
 MNEMOSYNE_WEEKLY_LOCK_KEY = "lock:run_mnemosyne_weekly"
 LAST_SCAN_KEY = "health:last_scan_setups"
 SCAN_LOCK_KEY = "lock:scan_setups"
+LAST_SIGNAL_SCORING_KEY = "health:last_signal_scoring"
+SIGNAL_SCORING_LOCK_KEY = "lock:score_signals"
+LAST_DECISION_GATE_KEY = "health:last_decision_gate"
+DECISION_GATE_LOCK_KEY = "lock:evaluate_decision_gate"
+LAST_VALUE_LEDGER_ROLLUP_KEY = "health:last_value_ledger_rollup"
+VALUE_LEDGER_ROLLUP_LOCK_KEY = "lock:run_value_ledger_rollup"
 # Cron-triggered jobs (Mnemosyne) don't have a fixed "interval" setting to
 # size their lock TTL off of — a flat cap comfortably longer than either
 # job should ever take, same purpose as POLL_LOCK_TTL_BUFFER_SECONDS for
@@ -279,6 +285,79 @@ async def release_scan_lock() -> None:
     release_poll_lock's docstring for why."""
     redis = get_redis()
     await redis.delete(SCAN_LOCK_KEY)
+
+
+async def record_signal_scoring_heartbeat() -> None:
+    await _redis.set(LAST_SIGNAL_SCORING_KEY, datetime.now(UTC).isoformat())
+
+
+async def get_last_signal_scoring_heartbeat() -> str | None:
+    return await _redis.get(LAST_SIGNAL_SCORING_KEY)
+
+
+async def acquire_signal_scoring_lock() -> bool:
+    """Same reasoning as acquire_poll_lock — a distinct lock key so the
+    Signal Engine's cycle can never run twice concurrently across
+    overlapping deploy instances (and, since signal_scores.candidate_setup_id
+    is unique, never double-score the same candidate under a deploy
+    overlap either)."""
+    redis = get_redis()
+    ttl = settings.signal_engine_interval_seconds + POLL_LOCK_TTL_BUFFER_SECONDS
+    acquired = await redis.set(SIGNAL_SCORING_LOCK_KEY, "1", nx=True, ex=ttl)
+    return bool(acquired)
+
+
+async def release_signal_scoring_lock() -> None:
+    """Only ever call after acquire_signal_scoring_lock() returned True —
+    see release_poll_lock's docstring for why."""
+    redis = get_redis()
+    await redis.delete(SIGNAL_SCORING_LOCK_KEY)
+
+
+async def record_decision_gate_heartbeat() -> None:
+    await _redis.set(LAST_DECISION_GATE_KEY, datetime.now(UTC).isoformat())
+
+
+async def get_last_decision_gate_heartbeat() -> str | None:
+    return await _redis.get(LAST_DECISION_GATE_KEY)
+
+
+async def acquire_decision_gate_lock() -> bool:
+    """Same reasoning as acquire_poll_lock — a distinct lock key so the
+    Decision Gate's cycle can never run twice concurrently across
+    overlapping deploy instances (double-routing is guarded further by
+    decision_gate_log's own idempotency check, but this is the cheaper,
+    first line of defense, same as every other job in this service)."""
+    redis = get_redis()
+    ttl = settings.decision_gate_interval_seconds + POLL_LOCK_TTL_BUFFER_SECONDS
+    acquired = await redis.set(DECISION_GATE_LOCK_KEY, "1", nx=True, ex=ttl)
+    return bool(acquired)
+
+
+async def release_decision_gate_lock() -> None:
+    """Only ever call after acquire_decision_gate_lock() returned True —
+    see release_poll_lock's docstring for why."""
+    redis = get_redis()
+    await redis.delete(DECISION_GATE_LOCK_KEY)
+
+
+async def record_value_ledger_rollup_heartbeat() -> None:
+    await _redis.set(LAST_VALUE_LEDGER_ROLLUP_KEY, datetime.now(UTC).isoformat())
+
+
+async def get_last_value_ledger_rollup_heartbeat() -> str | None:
+    return await _redis.get(LAST_VALUE_LEDGER_ROLLUP_KEY)
+
+
+async def acquire_value_ledger_rollup_lock() -> bool:
+    redis = get_redis()
+    acquired = await redis.set(VALUE_LEDGER_ROLLUP_LOCK_KEY, "1", nx=True, ex=CRON_LOCK_TTL_SECONDS)
+    return bool(acquired)
+
+
+async def release_value_ledger_rollup_lock() -> None:
+    redis = get_redis()
+    await redis.delete(VALUE_LEDGER_ROLLUP_LOCK_KEY)
 
 
 async def cache_fx_rate(currency: str, rate_to_usd: str, source: str, fetched_at: str) -> None:

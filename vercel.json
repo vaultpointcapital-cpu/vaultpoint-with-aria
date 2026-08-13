@@ -11,6 +11,10 @@
     {
       "path": "/api/aria/pantheon/proactive-check",
       "schedule": "*/10 * * * *"
+    },
+    {
+      "path": "/api/disputes/cron/sla-check",
+      "schedule": "*/30 * * * *"
     }
   ]
 }

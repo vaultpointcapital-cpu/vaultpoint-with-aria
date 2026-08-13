@@ -2,6 +2,7 @@ import { type NextRequest } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 import { fundManagedAccountSchema } from '@/lib/validations/managed-accounts';
 import { createNotification } from '@/lib/managed-accounts/notifications';
+import { getActiveTierContractIdForManaged } from '@/lib/tier-contracts/snapshot';
 import { apiError, apiSuccess } from '@/lib/utils/api-response';
 
 /**
@@ -47,12 +48,19 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
     return apiError('VALIDATION_ERROR', 'KYC must be verified before this account can be funded.');
   }
 
+  // Tier Contract — the real "this account went live" moment; stamped
+  // atomically with the same update, not a second write. Never gated
+  // through subscriptions (a Managed Account is orthogonal to
+  // subscription_tier) — see 20260815000002_add_tier_contracts.sql.
+  const managedTierContractId = await getActiveTierContractIdForManaged(supabase);
+
   const { data, error } = await supabase
     .from('managed_accounts')
     .update({
       starting_capital: parsed.data.startingCapital,
       current_balance: parsed.data.startingCapital,
       status: 'active',
+      tier_contract_id: managedTierContractId,
     })
     .eq('id', params.id)
     .eq('user_id', authData.user.id)

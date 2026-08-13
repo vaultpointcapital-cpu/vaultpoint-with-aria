@@ -56,6 +56,14 @@ async function decodeApprovalToken(token: string): Promise<ApprovalTokenPayload>
 
 export interface InitiateStepUpResult {
   approvalId: string;
+  // The raw step_up_approvals.id — distinct from approvalId (a signed
+  // JWT whose `sub` claim happens to equal this value, but which no
+  // caller should ever parse to recover it). Added for the Decision
+  // Gate's manual-account alert route, which needs a real uuid to store
+  // as decision_gate_log.step_up_approval_id's FK target — a JWT string
+  // cannot satisfy that column's uuid type. Existing callers are
+  // unaffected; this is purely additive.
+  approvalRowId: string;
   expiresAt: string;
   methods: StepUpMethod[];
 }
@@ -128,7 +136,7 @@ export async function initiateStepUp(params: {
     });
   }
 
-  return { approvalId: token, expiresAt: row.expires_at, methods };
+  return { approvalId: token, approvalRowId: row.id, expiresAt: row.expires_at, methods };
 }
 
 /**
