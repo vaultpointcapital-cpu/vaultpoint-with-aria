@@ -17,6 +17,19 @@ LAST_WALLET_RECONCILIATION_KEY = "health:last_wallet_reconciliation"
 WALLET_RECONCILIATION_LOCK_KEY = "lock:reconcile_wallet_transactions"
 LAST_FX_REFRESH_KEY = "health:last_fx_refresh"
 FX_REFRESH_LOCK_KEY = "lock:refresh_fx_rates"
+LAST_HERMES_SCAN_KEY = "health:last_hermes_scan"
+HERMES_SCAN_LOCK_KEY = "lock:run_hermes_scan"
+LAST_MNEMOSYNE_DAILY_KEY = "health:last_mnemosyne_daily"
+MNEMOSYNE_DAILY_LOCK_KEY = "lock:run_mnemosyne_daily"
+LAST_MNEMOSYNE_WEEKLY_KEY = "health:last_mnemosyne_weekly"
+MNEMOSYNE_WEEKLY_LOCK_KEY = "lock:run_mnemosyne_weekly"
+LAST_SCAN_KEY = "health:last_scan_setups"
+SCAN_LOCK_KEY = "lock:scan_setups"
+# Cron-triggered jobs (Mnemosyne) don't have a fixed "interval" setting to
+# size their lock TTL off of — a flat cap comfortably longer than either
+# job should ever take, same purpose as POLL_LOCK_TTL_BUFFER_SECONDS for
+# the interval-triggered jobs.
+CRON_LOCK_TTL_SECONDS = 1800
 # Safety margin above a normal cycle's expected duration. The lock is
 # explicitly released at the end of a well-behaved cycle (see
 # release_poll_lock) — this TTL only matters if a holder crashes or hangs
@@ -178,6 +191,94 @@ async def release_fx_refresh_lock() -> None:
     release_poll_lock's docstring for why."""
     redis = get_redis()
     await redis.delete(FX_REFRESH_LOCK_KEY)
+
+
+async def record_hermes_scan_heartbeat() -> None:
+    await _redis.set(LAST_HERMES_SCAN_KEY, datetime.now(UTC).isoformat())
+
+
+async def get_last_hermes_scan_heartbeat() -> str | None:
+    return await _redis.get(LAST_HERMES_SCAN_KEY)
+
+
+async def acquire_hermes_scan_lock() -> bool:
+    """Same reasoning as acquire_poll_lock — a distinct lock key so
+    Hermes's opportunity scan can never run twice concurrently across
+    overlapping deploy instances."""
+    redis = get_redis()
+    ttl = settings.hermes_scan_interval_seconds + POLL_LOCK_TTL_BUFFER_SECONDS
+    acquired = await redis.set(HERMES_SCAN_LOCK_KEY, "1", nx=True, ex=ttl)
+    return bool(acquired)
+
+
+async def release_hermes_scan_lock() -> None:
+    """Only ever call after acquire_hermes_scan_lock() returned True —
+    see release_poll_lock's docstring for why."""
+    redis = get_redis()
+    await redis.delete(HERMES_SCAN_LOCK_KEY)
+
+
+async def record_mnemosyne_daily_heartbeat() -> None:
+    await _redis.set(LAST_MNEMOSYNE_DAILY_KEY, datetime.now(UTC).isoformat())
+
+
+async def get_last_mnemosyne_daily_heartbeat() -> str | None:
+    return await _redis.get(LAST_MNEMOSYNE_DAILY_KEY)
+
+
+async def acquire_mnemosyne_daily_lock() -> bool:
+    redis = get_redis()
+    acquired = await redis.set(MNEMOSYNE_DAILY_LOCK_KEY, "1", nx=True, ex=CRON_LOCK_TTL_SECONDS)
+    return bool(acquired)
+
+
+async def release_mnemosyne_daily_lock() -> None:
+    redis = get_redis()
+    await redis.delete(MNEMOSYNE_DAILY_LOCK_KEY)
+
+
+async def record_mnemosyne_weekly_heartbeat() -> None:
+    await _redis.set(LAST_MNEMOSYNE_WEEKLY_KEY, datetime.now(UTC).isoformat())
+
+
+async def get_last_mnemosyne_weekly_heartbeat() -> str | None:
+    return await _redis.get(LAST_MNEMOSYNE_WEEKLY_KEY)
+
+
+async def acquire_mnemosyne_weekly_lock() -> bool:
+    redis = get_redis()
+    acquired = await redis.set(MNEMOSYNE_WEEKLY_LOCK_KEY, "1", nx=True, ex=CRON_LOCK_TTL_SECONDS)
+    return bool(acquired)
+
+
+async def release_mnemosyne_weekly_lock() -> None:
+    redis = get_redis()
+    await redis.delete(MNEMOSYNE_WEEKLY_LOCK_KEY)
+
+
+async def record_scan_heartbeat() -> None:
+    await _redis.set(LAST_SCAN_KEY, datetime.now(UTC).isoformat())
+
+
+async def get_last_scan_heartbeat() -> str | None:
+    return await _redis.get(LAST_SCAN_KEY)
+
+
+async def acquire_scan_lock() -> bool:
+    """Same reasoning as acquire_poll_lock — a distinct lock key so the
+    Scanner Service's cycle can never run twice concurrently across
+    overlapping deploy instances."""
+    redis = get_redis()
+    ttl = settings.scanner_interval_seconds + POLL_LOCK_TTL_BUFFER_SECONDS
+    acquired = await redis.set(SCAN_LOCK_KEY, "1", nx=True, ex=ttl)
+    return bool(acquired)
+
+
+async def release_scan_lock() -> None:
+    """Only ever call after acquire_scan_lock() returned True — see
+    release_poll_lock's docstring for why."""
+    redis = get_redis()
+    await redis.delete(SCAN_LOCK_KEY)
 
 
 async def cache_fx_rate(currency: str, rate_to_usd: str, source: str, fetched_at: str) -> None:

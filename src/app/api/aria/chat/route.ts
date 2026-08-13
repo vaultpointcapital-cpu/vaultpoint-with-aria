@@ -10,6 +10,7 @@ import {
   REGENERATION_FALLBACK_MESSAGE,
   UNUSABLE_CONFIDENCE_MESSAGE,
 } from '@/lib/aria/compliance';
+import { getNewFindings, markFindingsDelivered, type AriaFinding } from '@/lib/aria/findings';
 import type { AriaContext } from '@/lib/aria/types';
 import type { SubscriptionTier } from '@/types/database';
 
@@ -108,7 +109,14 @@ export async function POST(request: NextRequest) {
     });
   }
 
-  const systemPrompt = buildSystemPrompt(profile?.full_name ?? null, ctx);
+  // Aria Pantheon — findings not yet shown to the user, woven into the
+  // system prompt below. Fetched even on a request with no chat-relevant
+  // question so a stray "hi" still surfaces a pending critical loss
+  // warning; findings.ts's own ordering/TTL handles what's actually safe
+  // to show.
+  const findings = await getNewFindings(authData.user.id);
+
+  const systemPrompt = buildSystemPrompt(profile?.full_name ?? null, ctx, findings);
 
   try {
     const response = await anthropic.messages.create({
@@ -166,6 +174,17 @@ export async function POST(request: NextRequest) {
       reply = `${reply}${DISCLAIMER_TEXT}`;
     }
 
+    // Aria Pantheon — every findings fetched above was already in the
+    // prompt Aria actually replied from, so the whole batch is marked
+    // delivered together (see findings.ts's markFindingsDelivered
+    // docstring for why this doesn't try to parse which ones the model
+    // textually mentioned). Only reached on a successful reply — the D4
+    // unusable-confidence early return above never marks anything
+    // delivered, since the user was never actually informed.
+    if (findings.length > 0) {
+      await markFindingsDelivered(findings.map((f) => f.id));
+    }
+
     // The old response also carried a `portfolioSnapshot` field
     // (net worth/PnL/margin) — confirmed via a repo-wide search that no
     // client ever reads it (src/components/markets/aria-chat.tsx only
@@ -178,11 +197,60 @@ export async function POST(request: NextRequest) {
   }
 }
 
+const CONVERSATION_HISTORY_LIMIT = 30;
+
+/**
+ * GET /api/aria/chat
+ *
+ * Aria Pantheon's required companion fix: nothing in this app previously
+ * read aria_conversations (confirmed by search — no GET route existed,
+ * AriaChat kept history in local React state only), so every in-app
+ * notification row ever written here (Alert Engine, connection health,
+ * and now Pantheon's proactive deliveries) was invisible in the product.
+ * This is the minimum fix — recent web-channel history for the logged-in
+ * user, in the same tier/auth gate as POST above — not the fuller
+ * read-tracking model docs/ecosystem-cohesion/unified-notifications.md
+ * describes, which stays out of scope for this pass.
+ */
+export async function GET() {
+  const supabase = createClient();
+  const { data: authData, error: authError } = await supabase.auth.getUser();
+
+  if (authError || !authData.user) {
+    return apiError('UNAUTHORIZED', 'You must be logged in.');
+  }
+
+  const { data: profile } = await supabase
+    .from('users')
+    .select('subscription_tier')
+    .eq('id', authData.user.id)
+    .single();
+
+  const tier: SubscriptionTier = profile?.subscription_tier ?? 'free';
+  if (!canUseAria(tier)) {
+    return apiError('TIER_LIMIT_REACHED', 'Aria is available on Pro and Elite plans.', { tier });
+  }
+
+  const { data, error } = await supabase
+    .from('aria_conversations')
+    .select('role, content, created_at')
+    .eq('user_id', authData.user.id)
+    .eq('channel', 'web')
+    .order('created_at', { ascending: false })
+    .limit(CONVERSATION_HISTORY_LIMIT);
+
+  if (error) {
+    return apiError('INTERNAL_ERROR', 'Could not load conversation history.');
+  }
+
+  return apiSuccess({ messages: (data ?? []).reverse() });
+}
+
 // ---------------------------------------------------------------------
 // Prompting
 // ---------------------------------------------------------------------
 
-function buildSystemPrompt(userName: string | null, ctx: AriaContext): string {
+function buildSystemPrompt(userName: string | null, ctx: AriaContext, findings: AriaFinding[]): string {
   const capabilities = [
     '1. Portfolio Q&A — answer questions about their actual current holdings, exposure, and value using the live context below. Never estimate or round loosely when an exact figure is available.',
     "2. Risk awareness — if something in the context looks concentrated or over-leveraged, you may point it out even if not asked directly, but don't be alarmist about ordinary risk.",
@@ -198,6 +266,9 @@ function buildSystemPrompt(userName: string | null, ctx: AriaContext): string {
       '4. Position guidance — if asked what to consider buying, you may recommend a next asset based on the context and whatever you find via web_search, explaining your reasoning briefly so the user feels informed, not just told.'
     );
   }
+  capabilities.push(
+    `${capabilities.length + 1}. Pending findings — you now receive structured findings from a council of monitoring agents (Argus: loss/drawdown, Plutus: profit-taking, Hermes: opportunity scouting, Mnemosyne: periodic reports). These are FACTS, not scripts: reformulate them in your own voice, never repeat raw_data verbatim as if reading a log. Weigh multiple pending findings into one coherent picture rather than listing them one by one like a notification feed. Weave 'new' findings in naturally where relevant to what the user asked, or briefly at the start of your reply if none of their question relates to one — but don't force every finding into every reply if it isn't relevant. Findings not present below have already been delivered — don't repeat them unless the numbers have materially changed.`
+  );
 
   const coolDownRule = ctx.compliance.coolDownActive
     ? `\n- COOL-DOWN ACTIVE: ${ctx.compliance.coolDownReason} Do not suggest, recommend, or encourage any new position or purchase right now, even if asked directly — explain that new suggestions are paused today due to the portfolio move, and stick to answering questions about existing holdings.`
@@ -227,6 +298,9 @@ Hard rules:
 - Use Smart Money Concepts (SMC) terminology when relevant: order blocks, supply/demand zones, CHOCH (change of character), internal vs swing structure, liquidity sweeps.
 - excludedHoldings (reality: "simulated" or "pending" — e.g. a Hantec Trader Instant Funding prop-firm challenge account) are shown for context but are already excluded from portfolio.totalAssets. Never fold one into net worth or risk commentary, and never congratulate the user on an unrealized simulated gain — call it "challenge progress," not profit or gains.
 - Every money field below is { amount, currency } — always state the currency when quoting a figure, never assume USD. portfolio.unpricedCount holdings couldn't be converted to the user's display currency and are excluded from totalAssets — never imply they're worth zero.${coolDownRule}${regionNotesText}
+
+Pending findings (JSON):
+${JSON.stringify(findings)}
 
 Live context (JSON):
 ${JSON.stringify(ctx)}`;

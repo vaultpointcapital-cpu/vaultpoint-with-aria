@@ -21,14 +21,16 @@ interface WithdrawDialogProps {
   onOpenChange: (open: boolean) => void;
   wallets: Pick<Wallet, 'currency' | 'balance_cached' | 'updated_at'>[];
   onWithdrawn: () => void;
+  onKycBlocked?: () => void;
 }
 
 type StepUpMethod = 'push' | 'totp' | 'telegram';
 type Stage = 'form' | 'step-up' | 'done';
 
-export function WithdrawDialog({ open, onOpenChange, wallets, onWithdrawn }: WithdrawDialogProps) {
+export function WithdrawDialog({ open, onOpenChange, wallets, onWithdrawn, onKycBlocked }: WithdrawDialogProps) {
   const [stage, setStage] = useState<Stage>('form');
   const [serverError, setServerError] = useState<string | null>(null);
+  const [kycBlocked, setKycBlocked] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [withdrawalRequestId, setWithdrawalRequestId] = useState<string | null>(null);
   const [approvalId, setApprovalId] = useState<string | null>(null);
@@ -65,6 +67,7 @@ export function WithdrawDialog({ open, onOpenChange, wallets, onWithdrawn }: Wit
       setApprovalId(null);
       setMethods([]);
       setTotpCode('');
+      setKycBlocked(false);
       if (pollRef.current) clearInterval(pollRef.current);
     }
     onOpenChange(next);
@@ -72,6 +75,7 @@ export function WithdrawDialog({ open, onOpenChange, wallets, onWithdrawn }: Wit
 
   async function onSubmit(data: WithdrawRequestInput) {
     setServerError(null);
+    setKycBlocked(false);
     setIsSubmitting(true);
 
     const res = await fetch('/api/wallet/withdraw/request', {
@@ -85,6 +89,7 @@ export function WithdrawDialog({ open, onOpenChange, wallets, onWithdrawn }: Wit
     if (!res.ok) {
       const body = await res.json().catch(() => null);
       setServerError(body?.error ?? 'Could not create withdrawal request. Please try again.');
+      if (body?.code === 'KYC_REQUIRED' || body?.code === 'LIMIT_EXCEEDED') setKycBlocked(true);
       return;
     }
 
@@ -162,8 +167,13 @@ export function WithdrawDialog({ open, onOpenChange, wallets, onWithdrawn }: Wit
         </DialogHeader>
 
         {serverError && (
-          <div role="alert" className="mb-4 rounded-lg border border-warning/30 bg-warning/10 px-4 py-3 text-sm text-warning">
-            {serverError}
+          <div role="alert" className="mb-4 space-y-2 rounded-lg border border-warning/30 bg-warning/10 px-4 py-3 text-sm text-warning">
+            <p>{serverError}</p>
+            {kycBlocked && onKycBlocked && (
+              <Button type="button" variant="outline" size="sm" onClick={onKycBlocked}>
+                Verify identity
+              </Button>
+            )}
           </div>
         )}
 

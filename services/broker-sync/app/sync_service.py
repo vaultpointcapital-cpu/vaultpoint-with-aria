@@ -16,6 +16,8 @@ from .connection_health_notifications import notify_health_change
 from .encryption import decrypt
 from .financial import calculate_position_value
 from .models import BrokerType
+from .pantheon.argus import evaluate_argus
+from .pantheon.plutus import evaluate_plutus
 from .redis_cache import cache_positions
 from .signal_outcomes import detect_and_record_outcomes
 from .supabase_client import get_service_client
@@ -193,6 +195,25 @@ async def sync_connection(connection: dict) -> None:
     await client.aclose()
 
     await asyncio.to_thread(_reconcile_positions, supabase, connection_id, rows, stale)
+
+    # Aria Pantheon — Argus (loss/risk) and Plutus (profit) evaluate this
+    # cycle's already-fetched `rows` against the positions rows just
+    # persisted above (needed for their dedup state columns,
+    # argus_last_severity/plutus_last_severity). Guarded on account_type:
+    # a simulated prop-challenge account swinging -20% must never trigger
+    # a real-feeling loss warning, same real-only boundary
+    # src/lib/aria/compliance.ts and _upsert_portfolio_snapshot already
+    # enforce elsewhere.
+    if connection.get("account_type") != "simulated":
+        try:
+            await evaluate_argus(supabase, connection, rows)
+            await evaluate_plutus(supabase, connection, rows)
+        except Exception:
+            logger.exception(
+                "pantheon: Argus/Plutus evaluation failed for connection=%s — position sync continues regardless.",
+                connection_id,
+            )
+
     await _apply_sync_outcome(supabase, connection, outcome, error_code=error_code, error_message=error_message)
 
     if outcome is SyncOutcome.SUCCESS:

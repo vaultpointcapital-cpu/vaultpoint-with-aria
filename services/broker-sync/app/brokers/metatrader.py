@@ -289,6 +289,34 @@ class MetaTraderClient(BrokerClient):
         except Exception:
             return False
 
+    async def get_candles(self, symbol: str, timeframe: str, limit: int = 200) -> list[dict]:
+        """Historical OHLC candles for the Scanner Service's SMC rules
+        engine (app/scanner/rules.py). Genuinely new capability — before
+        this method, nothing in the service fetched candle/OHLC data at
+        all (see alert_engine.py's own docstring: only per-position
+        mark_price existed). `timeframe` is MetaApi's own string format
+        (e.g. '1m', '5m', '15m', '1h', '4h'), not this codebase's
+        watchlist_symbols.timeframe values ('M1'/'M5'/.../'H4') —
+        scanner/service.py is responsible for translating between the two.
+
+        Returns MetaApi's raw candle objects (time/open/high/low/close/
+        tickVolume, oldest first) — rules.py consumes this shape directly
+        rather than this method re-mapping into a VaultPoint-specific
+        dataclass, since candles are consumed once, internally, and never
+        surfaced through any API response the way Position is.
+        """
+        host = self._client_api_host()
+        response = await self._request(
+            "GET",
+            f"{host}/users/current/accounts/{self.account_id}/historical-market-data/symbols/{symbol}/timeframes/{timeframe}/candles",
+            params={"limit": limit},
+        )
+        if response.status_code != 200:
+            raise RuntimeError(
+                f"MetaApi historical-market-data request failed ({response.status_code}): {response.text[:300]}"
+            )
+        return response.json()
+
     async def place_order(
         self,
         *,

@@ -1,11 +1,18 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { DepositDialog } from '@/components/wallet/deposit-dialog';
 import { WithdrawDialog } from '@/components/wallet/withdraw-dialog';
-import type { Wallet, WalletTransaction } from '@/types/database';
+import { TierUpgradeDialog } from '@/components/wallet/tier-upgrade-dialog';
+import type { KycTier, Wallet, WalletTransaction } from '@/types/database';
+
+const TIER_LABEL: Record<KycTier, string> = {
+  tier0: 'Tier 0 — Verify your identity to deposit',
+  tier1: 'Tier 1 — Verify further to unlock withdrawals',
+  tier2: 'Tier 2 — Fully verified',
+};
 
 interface WalletClientProps {
   initialWallets: Pick<Wallet, 'currency' | 'balance_cached' | 'updated_at'>[];
@@ -35,6 +42,17 @@ export function WalletClient({ initialWallets, initialTransactions }: WalletClie
   const [transactions, setTransactions] = useState(initialTransactions);
   const [depositOpen, setDepositOpen] = useState(false);
   const [withdrawOpen, setWithdrawOpen] = useState(false);
+  const [tierUpgradeOpen, setTierUpgradeOpen] = useState(false);
+  const [kycTier, setKycTier] = useState<KycTier>('tier0');
+
+  useEffect(() => {
+    fetch('/api/kyc/status')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((body) => {
+        if (body?.tier) setKycTier(body.tier);
+      })
+      .catch(() => {});
+  }, []);
 
   async function refresh() {
     const [balanceRes, txRes] = await Promise.all([
@@ -62,6 +80,15 @@ export function WalletClient({ initialWallets, initialTransactions }: WalletClie
           <Button onClick={() => setDepositOpen(true)}>Deposit</Button>
         </div>
       </div>
+
+      {kycTier !== 'tier2' && (
+        <div className="flex items-center justify-between rounded-lg border border-border bg-surface-elevated px-4 py-3 text-sm">
+          <span className="text-text-secondary">{TIER_LABEL[kycTier]}</span>
+          <Button variant="outline" size="sm" onClick={() => setTierUpgradeOpen(true)}>
+            Verify identity
+          </Button>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
         {wallets.length === 0 && (
@@ -106,12 +133,29 @@ export function WalletClient({ initialWallets, initialTransactions }: WalletClie
         </CardContent>
       </Card>
 
-      <DepositDialog open={depositOpen} onOpenChange={setDepositOpen} />
+      <DepositDialog
+        open={depositOpen}
+        onOpenChange={setDepositOpen}
+        onKycBlocked={() => {
+          setDepositOpen(false);
+          setTierUpgradeOpen(true);
+        }}
+      />
       <WithdrawDialog
         open={withdrawOpen}
         onOpenChange={setWithdrawOpen}
         wallets={wallets}
         onWithdrawn={refresh}
+        onKycBlocked={() => {
+          setWithdrawOpen(false);
+          setTierUpgradeOpen(true);
+        }}
+      />
+      <TierUpgradeDialog
+        open={tierUpgradeOpen}
+        onOpenChange={setTierUpgradeOpen}
+        currentTier={kycTier}
+        onTierChanged={setKycTier}
       />
     </div>
   );

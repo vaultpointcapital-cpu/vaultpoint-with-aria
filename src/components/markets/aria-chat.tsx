@@ -60,6 +60,41 @@ export function AriaChat({ symbol }: AriaChatProps) {
     scrollAnchorRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, isLoading]);
 
+  // Aria Pantheon's required companion fix — nothing previously read
+  // aria_conversations, so every in-app notification ever written there
+  // (Alert Engine, connection health, and now Pantheon's proactive
+  // deliveries) was invisible in the product. Best-effort: a failed or
+  // empty history fetch just means the chat starts blank, same as before
+  // this fix existed.
+  useEffect(() => {
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const res = await fetch('/api/aria/chat');
+        if (!res.ok) return;
+
+        const body = await res.json().catch(() => null);
+        const history: ChatMessage[] = (body?.messages ?? []).map(
+          (m: { role: 'user' | 'assistant'; content: string }) => ({
+            role: m.role,
+            content: m.content,
+          })
+        );
+
+        if (!cancelled && history.length > 0) {
+          setMessages((prev) => [...history, ...prev]);
+        }
+      } catch {
+        // History is a nice-to-have, not required for chat to work.
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   async function sendMessage(text: string) {
     const trimmed = text.trim();
     if (!trimmed || isLoading) return;

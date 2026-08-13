@@ -3,6 +3,7 @@ import { type NextRequest } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 import { depositInitiateSchema } from '@/lib/validations/wallet';
 import { checkWalletLimit } from '@/lib/wallet/limits';
+import { checkKycTierLimit } from '@/lib/kyc/wallet-tier-limit-check';
 import { resolveWalletProvider, CURRENCY_BY_WALLET_PROVIDER, type WalletProvider } from '@/lib/wallet/routing';
 import { initializePaystackDeposit } from '@/lib/billing/paystack';
 import { createDepositPaymentIntent } from '@/lib/billing/stripe';
@@ -36,6 +37,18 @@ export async function POST(request: NextRequest) {
   const limitCheck = checkWalletLimit(currency, amount);
   if (!limitCheck.ok) {
     return apiError('LIMIT_EXCEEDED', limitCheck.message);
+  }
+
+  // KYC tier gate — reasonCode 'withdrawals_not_allowed_for_tier' never
+  // fires here (type is always 'deposit'), kept symmetric with the same
+  // check in withdraw/request/route.ts. 422 (LIMIT_EXCEEDED), not the PRD's
+  // literal 400, to match this codebase's existing status convention.
+  const tierCheck = await checkKycTierLimit({ userId: authData.user.id, type: 'deposit', amount, currency });
+  if (!tierCheck.allowed) {
+    return apiError(
+      tierCheck.reasonCode === 'withdrawals_not_allowed_for_tier' ? 'KYC_REQUIRED' : 'LIMIT_EXCEEDED',
+      tierCheck.message
+    );
   }
 
   const { data: profile } = await supabase.from('users').select('country_code').eq('id', authData.user.id).single();

@@ -35,6 +35,21 @@ export type AriaMessageType =
   | 'IDLE_CHECK_IN'
   | 'RISK_CHECK'
   | 'COMMUNITY_NUDGE';
+// Aria Pantheon. Matches
+// supabase/migrations/20260813000000_add_aria_findings.sql exactly.
+export type AriaFindingSourceAgent = 'argus' | 'plutus' | 'hermes' | 'mnemosyne' | 'nike' | 'themis';
+export type AriaFindingType =
+  | 'loss_warning'
+  | 'profit_alert'
+  | 'buy_signal'
+  | 'portfolio_review'
+  | 'market_update'
+  | 'risk_check'
+  | 'community_nudge';
+export type AriaFindingSeverity = 'info' | 'caution' | 'warning' | 'critical';
+export type AriaFindingStatus = 'new' | 'acknowledged' | 'delivered' | 'dismissed' | 'expired';
+// Per-position dedup state, supabase/migrations/20260813000001_add_positions_pantheon_severity.sql.
+export type PantheonSeverityBucket = 'none' | 'caution' | 'warning' | 'critical';
 export type PaymentProvider = 'stripe' | 'paystack' | 'flutterwave';
 export type SubscriptionStatus = 'active' | 'past_due' | 'cancelled' | 'trialing';
 export type MtPlatform = 'mt4' | 'mt5';
@@ -80,6 +95,11 @@ export type User = {
   // Money & Currency Layer — render-only (D6). Never changes what's
   // stored; only src/lib/utils/financial.ts's display formatting reads it.
   display_currency: string;
+  // Wallet KYC tier gate (independent of managed_accounts.kyc_status).
+  // Only ever written by src/lib/kyc/tier-state.ts. See
+  // 20260814000000_add_wallet_kyc_tiering.sql.
+  kyc_tier: KycTier;
+  kyc_tier_verified_at: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -230,6 +250,11 @@ export type Position = {
   margin_used: number | null;
   opened_at: string | null;
   synced_at: string;
+  // Aria Pantheon dedup state — never set by TS code, only by
+  // services/broker-sync/app/pantheon/argus.py|plutus.py. See
+  // supabase/migrations/20260813000001_add_positions_pantheon_severity.sql.
+  argus_last_severity: PantheonSeverityBucket;
+  plutus_last_severity: PantheonSeverityBucket;
 };
 
 export type PortfolioSnapshot = {
@@ -383,6 +408,38 @@ export type WalletWeb3DepositAddress = {
   chain: string;
   address: string;
   created_at: string;
+};
+
+// Wallet KYC Tiering — see 20260814000000_add_wallet_kyc_tiering.sql.
+// Deliberately separate from KycVendor/KycVerification above, which is a
+// different, incompatible system (Managed Accounts/Trader identity).
+export type KycTier = 'tier0' | 'tier1' | 'tier2';
+
+export type KycTierLimits = {
+  tier: KycTier;
+  max_single_deposit: number | null;
+  max_monthly_deposit: number | null;
+  withdrawals_allowed: boolean;
+  max_single_withdrawal: number | null;
+  max_monthly_withdrawal: number | null;
+};
+
+export type WalletKycTierVerificationStatus = 'pending' | 'processing' | 'verified' | 'rejected' | 'error';
+
+export type WalletKycTierVerification = {
+  id: string;
+  user_id: string;
+  tier: KycTier;
+  method: 'phone_email' | 'bvn_nin_liveness';
+  provider: 'internal' | 'smileid' | 'youverify' | 'stub';
+  status: WalletKycTierVerificationStatus;
+  vendor_ref: string | null;
+  result_summary: Record<string, unknown> | null;
+  failure_reason: string | null;
+  submitted_at: string;
+  decided_at: string | null;
+  created_at: string;
+  updated_at: string;
 };
 
 export type Alert = {
@@ -854,6 +911,25 @@ export type AriaConversation = {
   created_at: string;
 };
 
+// Aria Pantheon — written only by the Python worker modules
+// (services/broker-sync/app/pantheon/*.py, service-role) and updated
+// only by src/lib/aria/findings.ts's status-transition helpers (also
+// service-role — no client insert/update policy exists on this table).
+// See supabase/migrations/20260813000000_add_aria_findings.sql.
+export type AriaFinding = {
+  id: string;
+  user_id: string;
+  source_agent: AriaFindingSourceAgent;
+  finding_type: AriaFindingType;
+  severity: AriaFindingSeverity;
+  raw_data: Record<string, unknown>;
+  dedup_key: string;
+  status: AriaFindingStatus;
+  created_at: string;
+  acknowledged_at: string | null;
+  delivered_at: string | null;
+};
+
 // Signal Mode. Matches supabase/migrations/20260718000000_add_signal_mode.sql
 // and 20260718000001_add_failed_signal_action.sql exactly.
 
@@ -1023,13 +1099,20 @@ export interface Database {
       };
       positions: {
         Row: Position;
-        Insert: Omit<Position, 'id' | 'synced_at' | 'currency' | 'reality' | 'asset_class'> & {
+        Insert: Omit<
+          Position,
+          'id' | 'synced_at' | 'currency' | 'reality' | 'asset_class' | 'argus_last_severity' | 'plutus_last_severity'
+        > & {
           currency?: string;
           // reality is trigger-derived server-side — never actually set by
           // any insert, TS or Python; optional here purely so the type
           // doesn't demand a value no caller should ever provide.
           reality?: Reality;
           asset_class?: ValuationAssetClass;
+          // DB-defaulted to 'none' — only services/broker-sync/app/
+          // pantheon/argus.py|plutus.py ever set these, via Update, not Insert.
+          argus_last_severity?: PantheonSeverityBucket;
+          plutus_last_severity?: PantheonSeverityBucket;
         };
         Update: Partial<Omit<Position, 'id' | 'user_id'>>;
         // The only embedded-select relation actually used in the app
@@ -1146,6 +1229,24 @@ export interface Database {
         Row: WalletWeb3DepositAddress;
         Insert: Omit<WalletWeb3DepositAddress, 'id' | 'created_at'>;
         Update: never;
+        Relationships: [];
+      };
+      kyc_tier_limits: {
+        Row: KycTierLimits;
+        // Reference table — only ever populated by the migration's own seed
+        // data, never written by application code.
+        Insert: never;
+        Update: never;
+        Relationships: [];
+      };
+      wallet_kyc_tier_verifications: {
+        Row: WalletKycTierVerification;
+        // Only ever written via a service-role client, from
+        // src/lib/kyc/tier-state.ts — no client insert/update policy.
+        Insert: Omit<WalletKycTierVerification, 'id' | 'submitted_at' | 'decided_at' | 'created_at' | 'updated_at' | 'status'> & {
+          status?: WalletKycTierVerificationStatus;
+        };
+        Update: Partial<Omit<WalletKycTierVerification, 'id' | 'user_id' | 'created_at'>>;
         Relationships: [];
       };
       alerts: {
@@ -1372,10 +1473,26 @@ export interface Database {
       // service-role client (Alert Engine in-app delivery, and later the
       // Aria in-app workstream), never from Next.js — an accidental
       // client-side .insert() should fail at compile time.
+      // Insert is real (not never) as of Aria Pantheon: the proactive
+      // delivery route (src/app/api/aria/pantheon/proactive-check/route.ts,
+      // service-role) is now a second legitimate writer alongside the
+      // Python worker modules' in-app delivery helpers — there's no Python
+      // process a Vercel cron route can hand this off to. Still no
+      // client-facing RLS insert policy; both writers use the service role.
       aria_conversations: {
         Row: AriaConversation;
-        Insert: never;
+        Insert: Omit<AriaConversation, 'id' | 'created_at'>;
         Update: never;
+        Relationships: [];
+      };
+      // Written only by the Python worker modules (service-role) — no
+      // Next.js insert path. Update is real (not never): src/lib/aria/
+      // findings.ts's status-transition helpers are the one TS-side write
+      // path, service-role, since aria_findings has no client update policy.
+      aria_findings: {
+        Row: AriaFinding;
+        Insert: never;
+        Update: Partial<Pick<AriaFinding, 'status' | 'acknowledged_at' | 'delivered_at'>>;
         Relationships: [];
       };
       // Written only by the founder/signal desk via service-role (no
@@ -1448,6 +1565,20 @@ export interface Database {
         Returns: {
           transaction_id: string;
           new_balance: number;
+        }[];
+      };
+      // supabase/migrations/20260814000000_add_wallet_kyc_tiering.sql
+      wallet_check_kyc_limit: {
+        Args: {
+          p_user_id: string;
+          p_type: string;
+          p_amount: number;
+          p_currency?: string;
+        };
+        Returns: {
+          allowed: boolean;
+          reason_code: string | null;
+          message: string | null;
         }[];
       };
       // supabase/migrations/20260726000002_add_step_up_approvals.sql

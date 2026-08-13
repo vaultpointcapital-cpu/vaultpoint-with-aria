@@ -7,6 +7,10 @@
     {
       "path": "/api/offers/cron/process",
       "schedule": "0 */6 * * *"
+    },
+    {
+      "path": "/api/aria/pantheon/proactive-check",
+      "schedule": "*/10 * * * *"
     }
   ]
 }

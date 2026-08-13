@@ -18,6 +18,7 @@ const CURRENCY_OPTIONS: { currency: DepositInitiateInput['currency']; provider: 
 interface DepositDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  onKycBlocked?: () => void;
 }
 
 type DepositResult =
@@ -25,8 +26,9 @@ type DepositResult =
   | { provider: 'stripe'; clientSecret: string; paymentIntentId: string }
   | { provider: 'crypto'; address: string; chain: string; expectedAmount: number; currency: string };
 
-export function DepositDialog({ open, onOpenChange }: DepositDialogProps) {
+export function DepositDialog({ open, onOpenChange, onKycBlocked }: DepositDialogProps) {
   const [serverError, setServerError] = useState<string | null>(null);
+  const [kycBlocked, setKycBlocked] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [result, setResult] = useState<DepositResult | null>(null);
 
@@ -49,12 +51,14 @@ export function DepositDialog({ open, onOpenChange }: DepositDialogProps) {
       reset({ currency: 'NGN', provider: 'paystack' });
       setResult(null);
       setServerError(null);
+      setKycBlocked(false);
     }
     onOpenChange(next);
   }
 
   async function onSubmit(data: DepositInitiateInput) {
     setServerError(null);
+    setKycBlocked(false);
     setIsSubmitting(true);
 
     const res = await fetch('/api/wallet/deposit/initiate', {
@@ -68,6 +72,7 @@ export function DepositDialog({ open, onOpenChange }: DepositDialogProps) {
     if (!res.ok) {
       const body = await res.json().catch(() => null);
       setServerError(body?.error ?? 'Could not start deposit. Please try again.');
+      if (body?.code === 'KYC_REQUIRED' || body?.code === 'LIMIT_EXCEEDED') setKycBlocked(true);
       return;
     }
 
@@ -90,8 +95,13 @@ export function DepositDialog({ open, onOpenChange }: DepositDialogProps) {
         </DialogHeader>
 
         {serverError && (
-          <div role="alert" className="mb-4 rounded-lg border border-warning/30 bg-warning/10 px-4 py-3 text-sm text-warning">
-            {serverError}
+          <div role="alert" className="mb-4 space-y-2 rounded-lg border border-warning/30 bg-warning/10 px-4 py-3 text-sm text-warning">
+            <p>{serverError}</p>
+            {kycBlocked && onKycBlocked && (
+              <Button type="button" variant="outline" size="sm" onClick={onKycBlocked}>
+                Verify identity
+              </Button>
+            )}
           </div>
         )}
 

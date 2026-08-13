@@ -11,7 +11,7 @@ from pydantic import BaseModel
 from .config import settings
 from .observability import init_sentry
 from .rate_limiter import check_and_set_rate_limit
-from .redis_cache import get_last_poll_heartbeat, get_redis
+from .redis_cache import get_last_poll_heartbeat, get_last_scan_heartbeat, get_redis
 from .scheduler import scheduler, start_scheduler
 from .signal_execution import SignalExecutionError, execute_signal
 from .supabase_client import get_service_client
@@ -98,6 +98,16 @@ async def health():
             if age_seconds > settings.poll_interval_seconds * POLL_STALE_MULTIPLIER:
                 checks["last_successful_poll_stale"] = True
                 healthy = False
+
+    # Informational only, like every other scheduled job besides
+    # poll_all_connections (evaluate_all_alerts/evaluate_managed_mode/
+    # run_hermes_scan have no /health entry at all) — a stale scan doesn't
+    # flip overall health red, since a quiet watchlist (or one not yet
+    # configured) is a legitimate, non-degraded state.
+    try:
+        checks["last_successful_scan"] = await get_last_scan_heartbeat()
+    except Exception as exc:
+        checks["last_successful_scan"] = f"error: {exc}"
 
     return JSONResponse(
         status_code=200 if healthy else 503,

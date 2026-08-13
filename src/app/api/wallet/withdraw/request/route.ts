@@ -2,6 +2,7 @@ import { type NextRequest } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 import { withdrawRequestSchema } from '@/lib/validations/wallet';
 import { checkWalletLimit } from '@/lib/wallet/limits';
+import { checkKycTierLimit } from '@/lib/kyc/wallet-tier-limit-check';
 import { encrypt } from '@/lib/encryption/broker-keys';
 import { initiateStepUp } from '@/lib/auth/step-up';
 import { apiError, apiSuccess } from '@/lib/utils/api-response';
@@ -33,6 +34,17 @@ export async function POST(request: NextRequest) {
   const limitCheck = checkWalletLimit(currency, amount);
   if (!limitCheck.ok) {
     return apiError('LIMIT_EXCEEDED', limitCheck.message);
+  }
+
+  // KYC tier gate — a tier0/tier1 user is blocked outright
+  // ('withdrawals_not_allowed_for_tier' -> KYC_REQUIRED); a tier2 user is
+  // still subject to the single/monthly caps -> LIMIT_EXCEEDED.
+  const tierCheck = await checkKycTierLimit({ userId: authData.user.id, type: 'withdrawal', amount, currency });
+  if (!tierCheck.allowed) {
+    return apiError(
+      tierCheck.reasonCode === 'withdrawals_not_allowed_for_tier' ? 'KYC_REQUIRED' : 'LIMIT_EXCEEDED',
+      tierCheck.message
+    );
   }
 
   const { data: wallet } = await supabase

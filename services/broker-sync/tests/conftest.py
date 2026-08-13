@@ -57,6 +57,10 @@ class FakeQuery:
         self.filters.append(("lte", col, val))
         return self
 
+    def lt(self, col, val):
+        self.filters.append(("lt", col, val))
+        return self
+
     def limit(self, n):
         return self
 
@@ -70,10 +74,11 @@ class FakeQuery:
         self.values = values
         return self
 
-    def upsert(self, rows, on_conflict=None):
+    def upsert(self, rows, on_conflict=None, ignore_duplicates=False):
         self.op = "upsert"
         self.rows = rows
         self.on_conflict = on_conflict
+        self.ignore_duplicates = ignore_duplicates
         return self
 
     def delete(self):

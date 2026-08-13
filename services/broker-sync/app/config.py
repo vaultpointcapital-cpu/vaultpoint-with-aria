@@ -83,5 +83,48 @@ class Settings(BaseSettings):
     # causes a cache miss — same reasoning as every other job's interval.
     fx_refresh_interval_seconds: int = 1800
 
+    # Aria Pantheon — Hermes opportunity scan (services/broker-sync/app/
+    # pantheon/hermes.py). 20 min is a round middle value within the
+    # spec's 15-30 min band. Move/volume thresholds and the finding TTL
+    # are both tunable without a code change.
+    hermes_scan_interval_seconds: int = 1200
+    hermes_move_threshold_pct: float = 10.0
+    hermes_min_volume_usd: float = 50_000_000.0
+    hermes_finding_ttl_hours: float = 4.0
+
+    # Aria Autonomous Trading Agent — Scanner Service (app/scanner/).
+    # PRD default is "1-5 min, configurable per symbol/strategy"; 120s is
+    # the round middle of that band. Per-symbol overrides live on
+    # watchlist_symbols.scan_interval_seconds itself (read, not yet acted
+    # on independently — the scheduler still runs one shared cycle at this
+    # interval; true per-symbol cadence is a later refinement once more
+    # than a handful of symbols are configured).
+    scanner_interval_seconds: int = 120
+
+    # Signal Engine (app/signal_engine/) — scores newly-produced
+    # candidate_setups via Claude, once per candidate. Optional and
+    # skip-when-unset like every other vendor key in this file: no key
+    # means score_pending_candidates() logs and skips its cycle rather
+    # than crashing, so a deployment that hasn't enabled Aria scoring yet
+    # still starts cleanly. Reuses the same env var name
+    # (ANTHROPIC_API_KEY) the Next.js app's src/app/api/aria/chat/route.ts
+    # already reads, since both are the same Anthropic account.
+    anthropic_api_key: str | None = None
+    signal_engine_model: str = "claude-sonnet-5"
+    signal_engine_max_tokens: int = 2048
+    signal_engine_interval_seconds: int = 300
+
+    # Decision Gate (app/decision_gate/) — routes each signal_scores row
+    # to manual (step-up alert) or auto (execution) handling per account.
+    # confidence_threshold is 0-100, matching signal_scores.confidence_score's
+    # own scale. cooldown/daily-loss values are the PRD's own fixed numbers
+    # ("-10% daily loss -> 24h pause"), deliberately not reusing
+    # managed_mode_daily_loss_limit_pct's DB-configurable 5-20% range — a
+    # different product with a different, fixed rule.
+    decision_gate_interval_seconds: int = 60
+    decision_gate_confidence_threshold: float = 75.0
+    decision_gate_daily_loss_limit_pct: float = 10.0
+    decision_gate_cooldown_hours: float = 24.0
+
 
 settings = Settings()

@@ -10,23 +10,39 @@ from .alert_engine import evaluate_all_alerts as _evaluate_all_alerts
 from .config import settings
 from .fx_service import refresh_fx_rates as _refresh_fx_rates
 from .managed_mode import evaluate_managed_mode as _evaluate_managed_mode
+from .pantheon.hermes import run_hermes_scan as _run_hermes_scan
+from .pantheon.mnemosyne import mnemosyne_daily as _mnemosyne_daily
+from .pantheon.mnemosyne import mnemosyne_weekly as _mnemosyne_weekly
 from .redis_cache import (
     acquire_alert_lock,
     acquire_fx_refresh_lock,
+    acquire_hermes_scan_lock,
     acquire_managed_mode_lock,
+    acquire_mnemosyne_daily_lock,
+    acquire_mnemosyne_weekly_lock,
     acquire_poll_lock,
+    acquire_scan_lock,
     acquire_wallet_reconciliation_lock,
     record_alert_evaluation_heartbeat,
     record_fx_refresh_heartbeat,
+    record_hermes_scan_heartbeat,
     record_managed_mode_evaluation_heartbeat,
+    record_mnemosyne_daily_heartbeat,
+    record_mnemosyne_weekly_heartbeat,
     record_poll_heartbeat,
+    record_scan_heartbeat,
     record_wallet_reconciliation_heartbeat,
     release_alert_lock,
     release_fx_refresh_lock,
+    release_hermes_scan_lock,
     release_managed_mode_lock,
+    release_mnemosyne_daily_lock,
+    release_mnemosyne_weekly_lock,
     release_poll_lock,
+    release_scan_lock,
     release_wallet_reconciliation_lock,
 )
+from .scanner.service import scan_setups as _scan_setups
 from .supabase_client import get_service_client
 from .sync_service import BROKER_CLIENTS, sync_connection
 from .wallet_reconciliation import reconcile_wallet_transactions as _reconcile_wallet_transactions
@@ -201,6 +217,98 @@ async def refresh_fx_rates() -> None:
         await release_fx_refresh_lock()
 
 
+async def run_hermes_scan() -> None:
+    """Same lock/heartbeat/logging shape as the other jobs — see
+    pantheon/hermes.py for the actual CoinGecko screen + cool-down gate."""
+    if not await acquire_hermes_scan_lock():
+        logger.info("Another instance already holds the Hermes scan lock — skipping this cycle.")
+        return
+
+    started_at = time.monotonic()
+    logger.info("run_hermes_scan: started")
+
+    try:
+        await _run_hermes_scan()
+        await record_hermes_scan_heartbeat()
+    except Exception:
+        logger.exception("run_hermes_scan: failed")
+        sentry_sdk.capture_exception()
+        raise
+    finally:
+        duration_seconds = time.monotonic() - started_at
+        logger.info("run_hermes_scan: finished in %.2fs", duration_seconds)
+        await release_hermes_scan_lock()
+
+
+async def run_mnemosyne_daily() -> None:
+    """Same lock/heartbeat/logging shape as the other jobs, cron-triggered
+    (see pantheon/mnemosyne.py's module docstring for why)."""
+    if not await acquire_mnemosyne_daily_lock():
+        logger.info("Another instance already holds the Mnemosyne daily lock — skipping this run.")
+        return
+
+    started_at = time.monotonic()
+    logger.info("run_mnemosyne_daily: started")
+
+    try:
+        await _mnemosyne_daily()
+        await record_mnemosyne_daily_heartbeat()
+    except Exception:
+        logger.exception("run_mnemosyne_daily: failed")
+        sentry_sdk.capture_exception()
+        raise
+    finally:
+        duration_seconds = time.monotonic() - started_at
+        logger.info("run_mnemosyne_daily: finished in %.2fs", duration_seconds)
+        await release_mnemosyne_daily_lock()
+
+
+async def run_mnemosyne_weekly() -> None:
+    """Same lock/heartbeat/logging shape as the other jobs, cron-triggered."""
+    if not await acquire_mnemosyne_weekly_lock():
+        logger.info("Another instance already holds the Mnemosyne weekly lock — skipping this run.")
+        return
+
+    started_at = time.monotonic()
+    logger.info("run_mnemosyne_weekly: started")
+
+    try:
+        await _mnemosyne_weekly()
+        await record_mnemosyne_weekly_heartbeat()
+    except Exception:
+        logger.exception("run_mnemosyne_weekly: failed")
+        sentry_sdk.capture_exception()
+        raise
+    finally:
+        duration_seconds = time.monotonic() - started_at
+        logger.info("run_mnemosyne_weekly: finished in %.2fs", duration_seconds)
+        await release_mnemosyne_weekly_lock()
+
+
+async def scan_setups() -> None:
+    """Same lock/heartbeat/logging shape as the other jobs — see
+    scanner/service.py for the actual candle fetch + SMC rules engine
+    (PRD Sprint 1, component 4A)."""
+    if not await acquire_scan_lock():
+        logger.info("Another instance already holds the scan lock — skipping this cycle.")
+        return
+
+    started_at = time.monotonic()
+    logger.info("scan_setups: started")
+
+    try:
+        await _scan_setups()
+        await record_scan_heartbeat()
+    except Exception:
+        logger.exception("scan_setups: failed")
+        sentry_sdk.capture_exception()
+        raise
+    finally:
+        duration_seconds = time.monotonic() - started_at
+        logger.info("scan_setups: finished in %.2fs", duration_seconds)
+        await release_scan_lock()
+
+
 def start_scheduler() -> None:
     scheduler.add_job(
         poll_all_connections,
@@ -242,14 +350,50 @@ def start_scheduler() -> None:
         next_run_time=datetime.now(),
         max_instances=1,
     )
+    scheduler.add_job(
+        run_hermes_scan,
+        "interval",
+        seconds=settings.hermes_scan_interval_seconds,
+        id="run_hermes_scan",
+        next_run_time=datetime.now(),
+        max_instances=1,
+    )
+    scheduler.add_job(
+        run_mnemosyne_daily,
+        "cron",
+        hour=0,
+        minute=0,
+        id="run_mnemosyne_daily",
+        max_instances=1,
+    )
+    scheduler.add_job(
+        run_mnemosyne_weekly,
+        "cron",
+        day_of_week="mon",
+        hour=0,
+        minute=5,  # offset from the daily job so they don't contend for the same user's data on Mondays
+        id="run_mnemosyne_weekly",
+        max_instances=1,
+    )
+    scheduler.add_job(
+        scan_setups,
+        "interval",
+        seconds=settings.scanner_interval_seconds,
+        id="scan_setups",
+        next_run_time=datetime.now(),
+        max_instances=1,
+    )
     scheduler.start()
     logger.info(
         "Scheduler started — polling every %ss, evaluating alerts every %ss, "
         "evaluating managed mode every %ss, reconciling wallet transactions every %ss, "
-        "refreshing FX rates every %ss.",
+        "refreshing FX rates every %ss, scanning Hermes opportunities every %ss, "
+        "Mnemosyne daily at 00:00 and weekly Monday 00:05, scanning SMC setups every %ss.",
         settings.poll_interval_seconds,
         settings.alert_evaluation_interval_seconds,
         settings.managed_mode_evaluation_interval_seconds,
         settings.wallet_reconciliation_interval_seconds,
         settings.fx_refresh_interval_seconds,
+        settings.hermes_scan_interval_seconds,
+        settings.scanner_interval_seconds,
     )
