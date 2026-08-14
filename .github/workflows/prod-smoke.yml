@@ -1,0 +1,115 @@
+name: Production smoke test
+
+# Manual-only (workflow_dispatch) — this hits real production: live DB
+# reads, a live broker API call, and POSTs to live webhook URLs. Never
+# wired to push/pull_request. Scoped to the "production" GitHub
+# Environment so it inherits whatever protection rules (required
+# reviewers, etc.) are configured there, same as any other job touching
+# real prod resources — configure that environment's secrets in repo
+# Settings > Environments, not repo-level secrets, if you want that gate.
+#
+# See scripts/prod-smoke.ts's own header comment for what this covers,
+# what it deliberately does not (docs/runbooks/pre-launch-prod-verification.md
+# does not exist in this repo as of writing this workflow — the checks
+# below come from the task that requested this script, not that file),
+# and the read-only/no-secret-logging contract every check follows.
+on:
+  workflow_dispatch:
+    inputs:
+      expected_commit_sha:
+        description: "Commit SHA the deployed app/broker-sync should be running (defaults to this workflow run's own SHA if left blank)"
+        required: false
+        type: string
+
+jobs:
+  smoke-test:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - run: npm ci
+
+      - name: Run production smoke test
+        run: npm run smoke:prod
+        env:
+          # --- Targets ---
+          PROD_APP_URL: ${{ secrets.PROD_APP_URL }}
+          BROKER_SYNC_HEALTH_URL: ${{ vars.BROKER_SYNC_HEALTH_URL }}
+          EXPECTED_COMMIT_SHA: ${{ inputs.expected_commit_sha }}
+
+          # --- Read-only DB credentials (RLS isolation + reconciliation +
+          # cache checks) — see scripts/prod-smoke.ts's header for the
+          # exact privileges this connection string's role needs
+          # (SELECT-only, no INSERT/UPDATE/DELETE grants on any table).
+          # Deliberately a distinct secret from any write-capable
+          # connection string used elsewhere in this repo. ---
+          PROD_SMOKE_DB_URL: ${{ secrets.PROD_SMOKE_DB_URL }}
+
+          # --- Needed to decrypt broker credentials for the
+          # reconciliation check (same algorithm as
+          # src/lib/encryption/broker-keys.ts) and to reach Upstash for
+          # the cache-staleness check. Same values production actually
+          # uses — never printed or logged by the script. ---
+          ENCRYPTION_KEY: ${{ secrets.ENCRYPTION_KEY }}
+          UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
+          UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
+
+          # --- Everything below is read for PRESENCE only, by the env
+          # var audit check — never logged, never used to make a call.
+          # Mirror production's actual set of configured secrets here so
+          # the audit reflects reality; an env var absent from this list
+          # (or from the "production" GitHub Environment's own secrets)
+          # will correctly report as missing even if it's set in Vercel/
+          # Railway, since this workflow has no access to those
+          # platforms' env var stores directly. ---
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          PYTHON_SERVICE_URL: ${{ secrets.PYTHON_SERVICE_URL }}
+          PYTHON_SERVICE_API_KEY: ${{ secrets.PYTHON_SERVICE_API_KEY }}
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          SLACK_DISPUTES_WEBHOOK_URL: ${{ secrets.SLACK_DISPUTES_WEBHOOK_URL }}
+          DISPUTES_ALERT_EMAIL: ${{ secrets.DISPUTES_ALERT_EMAIL }}
+          SLACK_PAYOUTS_WEBHOOK_URL: ${{ secrets.SLACK_PAYOUTS_WEBHOOK_URL }}
+          PAYOUTS_ALERT_EMAIL: ${{ secrets.PAYOUTS_ALERT_EMAIL }}
+          COBO_INTEGRATION_ENABLED: ${{ secrets.COBO_INTEGRATION_ENABLED }}
+          COBO_API_KEY: ${{ secrets.COBO_API_KEY }}
+          COBO_API_SECRET: ${{ secrets.COBO_API_SECRET }}
+          COBO_WALLET_ID: ${{ secrets.COBO_WALLET_ID }}
+          COBO_API_BASE_URL: ${{ secrets.COBO_API_BASE_URL }}
+          COBO_WEBHOOK_SECRET: ${{ secrets.COBO_WEBHOOK_SECRET }}
+          STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
+          STRIPE_WEBHOOK_SECRET: ${{ secrets.STRIPE_WEBHOOK_SECRET }}
+          NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY: ${{ secrets.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY }}
+          STRIPE_PRICE_PRO: ${{ secrets.STRIPE_PRICE_PRO }}
+          STRIPE_PRICE_ELITE: ${{ secrets.STRIPE_PRICE_ELITE }}
+          PAYSTACK_SECRET_KEY: ${{ secrets.PAYSTACK_SECRET_KEY }}
+          NEXT_PUBLIC_PAYSTACK_PUBLIC_KEY: ${{ secrets.NEXT_PUBLIC_PAYSTACK_PUBLIC_KEY }}
+          PAYSTACK_PLAN_PRO: ${{ secrets.PAYSTACK_PLAN_PRO }}
+          PAYSTACK_PLAN_ELITE: ${{ secrets.PAYSTACK_PLAN_ELITE }}
+          FLUTTERWAVE_PUBLIC_KEY: ${{ secrets.FLUTTERWAVE_PUBLIC_KEY }}
+          FLUTTERWAVE_SECRET_KEY: ${{ secrets.FLUTTERWAVE_SECRET_KEY }}
+          FLUTTERWAVE_ENCRYPTION_KEY: ${{ secrets.FLUTTERWAVE_ENCRYPTION_KEY }}
+          FLUTTERWAVE_WEBHOOK_SECRET_HASH: ${{ secrets.FLUTTERWAVE_WEBHOOK_SECRET_HASH }}
+          FLUTTERWAVE_PLAN_PRO: ${{ secrets.FLUTTERWAVE_PLAN_PRO }}
+          FLUTTERWAVE_PLAN_ELITE: ${{ secrets.FLUTTERWAVE_PLAN_ELITE }}
+          WEB3_OFFRAMP_WEBHOOK_SECRET: ${{ secrets.WEB3_OFFRAMP_WEBHOOK_SECRET }}
+          ONFIDO_WEBHOOK_TOKEN: ${{ secrets.ONFIDO_WEBHOOK_TOKEN }}
+          VERIFYME_WEBHOOK_SECRET: ${{ secrets.VERIFYME_WEBHOOK_SECRET }}
+          NEXT_PUBLIC_SENTRY_DSN: ${{ secrets.NEXT_PUBLIC_SENTRY_DSN }}
+          SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          STEP_UP_JWT_SECRET: ${{ secrets.STEP_UP_JWT_SECRET }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_WEBHOOK_SECRET: ${{ secrets.TELEGRAM_WEBHOOK_SECRET }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          NEXT_PUBLIC_APP_URL: ${{ secrets.PROD_APP_URL }}
+          NODE_ENV: production

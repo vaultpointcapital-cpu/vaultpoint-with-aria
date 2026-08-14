@@ -12,6 +12,7 @@
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "test:rls": "node scripts/test-rls-isolation.mjs",
+    "smoke:prod": "tsx scripts/prod-smoke.ts",
     "format": "prettier --write \"src/**/*.{ts,tsx}\"",
     "db:generate-types": "supabase gen types typescript --project-id $SUPABASE_PROJECT_ID > src/types/database.ts"
   },
@@ -74,6 +75,7 @@
     "supabase": "^2.109.1",
     "tailwindcss": "^3.4.11",
     "tailwindcss-animate": "^1.0.7",
+    "tsx": "^4.23.12",
     "typescript": "^5.6.2",
     "vitest": "^2.1.1"
   },
