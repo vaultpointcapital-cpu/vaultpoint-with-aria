@@ -1,0 +1,19 @@
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+# E/F: pycodestyle + pyflakes (correctness, unused imports/vars).
+# I: import sorting.
+# UP: modern-Python-syntax suggestions (e.g. Optional[X] -> X | None).
+# B: flake8-bugbear, common real-bug patterns (mutable defaults, etc).
+select = ["E", "F", "I", "UP", "B"]
+ignore = [
+    # BrokerType(str, Enum) is deliberate, not an oversight: switching to
+    # enum.StrEnum changes str(member) from "BrokerType.BYBIT" to "bybit"
+    # — a real behavior difference, not a pure style change, and every
+    # call site already uses .value explicitly where the string form is
+    # needed. Not worth the risk this late against a well-tested type
+    # every broker client depends on.
+    "UP042",
+]

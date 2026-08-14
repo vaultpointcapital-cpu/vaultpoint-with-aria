@@ -82,6 +82,7 @@ export async function POST(request: NextRequest) {
       currency: parsed.data.currency,
       color: parsed.data.color,
       deadline: parsed.data.deadline ?? null,
+      funding_reminder: parsed.data.fundingReminder ?? null,
       status: 'active',
     })
     .select()

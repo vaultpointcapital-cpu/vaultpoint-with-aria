@@ -1,0 +1,67 @@
+name: Next.js CI
+
+# Path-filtered so changes scoped to services/broker-sync don't trigger
+# this workflow — see .github/workflows/broker-sync-ci.yml for that half.
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - "src/**"
+      - "supabase/**"
+      - "package.json"
+      - "package-lock.json"
+      - "tsconfig.json"
+      - "next.config.js"
+      - "tailwind.config.ts"
+      - "vitest.config.ts"
+      - ".eslintrc.json"
+      - ".github/workflows/nextjs-ci.yml"
+  pull_request:
+    paths:
+      - "src/**"
+      - "supabase/**"
+      - "package.json"
+      - "package-lock.json"
+      - "tsconfig.json"
+      - "next.config.js"
+      - "tailwind.config.ts"
+      - "vitest.config.ts"
+      - ".eslintrc.json"
+      - ".github/workflows/nextjs-ci.yml"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - run: npm ci
+
+      - run: npm run type-check
+
+      - run: npm run lint
+
+      - run: npm run test
+
+      # Placeholder values — the build only needs these env vars to be
+      # *present* (createClient() checks for that), not valid; nothing
+      # in `next build` makes a live Supabase/Redis/Anthropic call, since
+      # every page that touches those is server-rendered on demand
+      # (marked ƒ in the build output), not statically generated.
+      # Verified locally with .env.local removed before writing this.
+      - run: npm run build
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: https://placeholder.supabase.co
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: placeholder-anon-key
+          SUPABASE_SERVICE_ROLE_KEY: placeholder-service-key
+          ENCRYPTION_KEY: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          ANTHROPIC_API_KEY: placeholder-anthropic-key
+          UPSTASH_REDIS_REST_URL: https://placeholder.upstash.io
+          UPSTASH_REDIS_REST_TOKEN: placeholder-token
+          PYTHON_SERVICE_URL: http://localhost:8000
+          PYTHON_SERVICE_API_KEY: placeholder-key

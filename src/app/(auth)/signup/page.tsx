@@ -6,7 +6,6 @@ import Link from 'next/link';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { signupSchema, type SignupInput } from '@/lib/validations/auth';
-import { createClient } from '@/lib/supabase/client';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -28,22 +27,24 @@ export default function SignupPage() {
     setServerError(null);
     setIsSubmitting(true);
 
-    const supabase = createClient();
-    const { error } = await supabase.auth.signUp({
-      email: data.email,
-      password: data.password,
-      options: {
-        data: { full_name: data.fullName },
-        emailRedirectTo: `${window.location.origin}/auth/callback`,
-      },
+    // Goes through our own API route (which sends its own branded
+    // confirmation email via Resend) rather than calling
+    // supabase.auth.signUp() directly — see
+    // src/app/api/auth/signup/route.ts's own comment for why.
+    const res = await fetch('/api/auth/signup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
     });
 
     setIsSubmitting(false);
 
-    if (error) {
-      // Supabase error messages are already safe to show — no internal
-      // details leak through these (e.g. "User already registered").
-      setServerError(error.message);
+    if (!res.ok) {
+      const body = await res.json().catch(() => null);
+      // The route's own error messages are already safe to show — same
+      // as Supabase's own error strings were (e.g. "User already
+      // registered").
+      setServerError(body?.error ?? 'Could not create your account. Please try again.');
       return;
     }
 
@@ -128,14 +129,25 @@ export default function SignupPage() {
           </Button>
 
           <p className="text-center text-xs text-text-tertiary">
-            By signing up you agree this is a tracking tool only — VaultPoint never executes
-            trades on your behalf.
+            By creating an account you agree to VaultPoint&apos;s{' '}
+            <Link href="/terms" className="text-accent-light hover:underline">
+              Terms
+            </Link>
+            ,{' '}
+            <Link href="/privacy" className="text-accent-light hover:underline">
+              Privacy Policy
+            </Link>
+            , and{' '}
+            <Link href="/risk-disclosure" className="text-accent-light hover:underline">
+              Risk Disclosure
+            </Link>
+            .
           </p>
         </form>
 
         <p className="mt-6 text-center text-sm text-text-secondary">
           Already have an account?{' '}
-          <Link href="/login" className="font-medium text-accent hover:underline">
+          <Link href="/login" className="font-medium text-accent-light hover:underline">
             Log in
           </Link>
         </p>

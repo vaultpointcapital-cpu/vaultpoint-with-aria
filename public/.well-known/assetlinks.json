@@ -1,0 +1,12 @@
+[
+  {
+    "relation": ["delegate_permission/common.handle_all_urls"],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "com.vaultpoint.app",
+      "sha256_cert_fingerprints": [
+        "70:48:54:CF:92:7A:11:06:9F:C8:9F:19:B5:12:12:D8:7D:53:F0:B2:10:72:4C:95:2C:DE:5B:62:15:0C:4A:D6"
+      ]
+    }
+  }
+]

@@ -1,0 +1,67 @@
+name: Migration dry-run
+
+# Applies the full checked-in migration stack, in order, to a fresh
+# Postgres database on every PR that touches a migration — the safety
+# net this repo didn't have when the live-DB schema drift this project
+# spent a full workstream reconciling was first introduced. A migration
+# that only "works" against an already-half-applied database (or only
+# against live's specific historical shape) should fail here before it
+# ever reaches a review.
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - "supabase/migrations/**"
+      - ".github/scripts/bootstrap-auth-schema.sql"
+      - ".github/workflows/migration-dry-run.yml"
+  pull_request:
+    paths:
+      - "supabase/migrations/**"
+      - ".github/scripts/bootstrap-auth-schema.sql"
+      - ".github/workflows/migration-dry-run.yml"
+
+jobs:
+  dry-run:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      PGHOST: localhost
+      PGPORT: 5432
+      PGUSER: postgres
+      PGPASSWORD: postgres
+      PGDATABASE: postgres
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install PostgreSQL client
+        run: sudo apt-get update && sudo apt-get install --yes postgresql-client
+
+      # See that file's own header comment for exactly what this stubs
+      # and why — only the auth.users table and auth.uid()/auth.role()
+      # functions the migrations actually reference, nothing else.
+      - name: Bootstrap a minimal Supabase-shaped auth schema
+        run: psql -v ON_ERROR_STOP=1 -f .github/scripts/bootstrap-auth-schema.sql
+
+      # Every migration in supabase/migrations/, in filename order — the
+      # same order Supabase applies them in. Fails fast on the first
+      # migration that errors, with that file's own output still visible
+      # in the log above the failure.
+      - name: Apply every migration in order
+        run: |
+          set -e
+          for f in supabase/migrations/*.sql; do
+            echo "=== Applying $f ==="
+            psql -v ON_ERROR_STOP=1 -f "$f"
+          done

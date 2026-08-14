@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { TIER_LIMITS } from '@/lib/billing/tier-limits';
 import type { SubscriptionTier } from '@/types/database';
 
 export const createPodSchema = z.object({
@@ -12,7 +13,18 @@ export const createPodSchema = z.object({
     .string()
     .regex(/^#[0-9A-Fa-f]{6}$/, 'Color must be a valid hex code')
     .default('#6C63FF'),
-  deadline: z.string().date().optional().nullable(),
+  // A native <input type="date"> left untouched submits '' (not
+  // undefined) — without this preprocess, z.string().date() rejects that
+  // empty string, incorrectly blocking submission of a genuinely-optional
+  // field. Pre-existing bug, surfaced by the new wizard's per-step
+  // validation calling trigger(['deadline']) in isolation.
+  deadline: z.preprocess(
+    (val) => (val === '' ? undefined : val),
+    z.string().date().optional().nullable()
+  ),
+  // Informational reminder only — never wired to an actual scheduled
+  // transfer. See supabase/migrations/20260723000000_add_pod_funding_reminder.sql.
+  fundingReminder: z.enum(['weekly', 'biweekly', 'monthly']).optional().nullable(),
 });
 
 export type CreatePodInput = z.infer<typeof createPodSchema>;
@@ -25,14 +37,16 @@ export const contributeToPodSchema = z.object({
 export type ContributeToPodInput = z.infer<typeof contributeToPodSchema>;
 
 /**
- * Tier limits per the PM spec: Free = 1 pod, Pro = 10, Elite = unlimited.
- * Centralized here so the limit is defined once and checked identically
- * everywhere it matters (API route, UI "add pod" button disabled state).
+ * Free = 1 pod, Pro = 10, Elite = unlimited. Sourced from
+ * lib/billing/tier-limits.ts's TIER_LIMITS — the single source of truth
+ * across every tier-gated feature, not just Pods. Re-exported under this
+ * name so the API route and UI "add pod" disabled-state check don't need
+ * to change.
  */
 export const POD_LIMITS_BY_TIER: Record<SubscriptionTier, number> = {
-  free: 1,
-  pro: 10,
-  elite: Infinity,
+  free: TIER_LIMITS.free.maxPods,
+  pro: TIER_LIMITS.pro.maxPods,
+  elite: TIER_LIMITS.elite.maxPods,
 };
 
 export function canCreateAnotherPod(tier: SubscriptionTier, currentPodCount: number): boolean {

@@ -43,6 +43,17 @@ export default function LoginPage() {
       return;
     }
 
+    // Fire-and-forget-ish, but awaited: the closest thing to a
+    // server-side "session created" hook this flow has, since
+    // signInWithPassword() above runs entirely client-side. A failure
+    // here (network blip, Resend down) must never block the actual
+    // login — see src/app/api/auth/login-device/route.ts.
+    try {
+      await fetch('/api/auth/login-device', { method: 'POST' });
+    } catch {
+      // Ignored on purpose — see comment above.
+    }
+
     router.push('/dashboard');
     router.refresh();
   }
@@ -80,7 +91,7 @@ export default function LoginPage() {
           <div className="space-y-2">
             <div className="flex items-center justify-between">
               <Label htmlFor="password">Password</Label>
-              <Link href="/reset-password" className="text-xs text-accent hover:underline">
+              <Link href="/reset-password" className="text-xs text-accent-light hover:underline">
                 Forgot password?
               </Link>
             </div>
@@ -102,7 +113,7 @@ export default function LoginPage() {
 
         <p className="mt-6 text-center text-sm text-text-secondary">
           Don&apos;t have an account?{' '}
-          <Link href="/signup" className="font-medium text-accent hover:underline">
+          <Link href="/signup" className="font-medium text-accent-light hover:underline">
             Sign up
           </Link>
         </p>

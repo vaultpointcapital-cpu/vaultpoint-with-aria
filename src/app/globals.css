@@ -29,4 +29,15 @@
   .font-mono-num {
     @apply font-mono tabular-nums;
   }
+
+  /*
+   * Vault Glow: reserved for exactly one hero number per screen — the
+   * single most important figure on that page (e.g. total portfolio
+   * value). Never apply to more than one element on the same screen.
+   */
+  .vault-glow {
+    text-shadow:
+      0 0 20px rgba(108, 99, 255, 0.5),
+      0 0 44px rgba(108, 99, 255, 0.25);
+  }
 }

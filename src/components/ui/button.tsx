@@ -12,7 +12,7 @@ const buttonVariants = cva(
         destructive: 'bg-warning text-white hover:bg-warning/90',
         outline: 'border border-border bg-transparent hover:bg-surface-elevated text-text-primary',
         ghost: 'hover:bg-surface-elevated text-text-secondary hover:text-text-primary',
-        link: 'text-accent underline-offset-4 hover:underline',
+        link: 'text-accent-light underline-offset-4 hover:underline',
       },
       size: {
         default: 'h-10 px-4 py-2',

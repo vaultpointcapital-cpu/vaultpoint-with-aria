@@ -2,6 +2,7 @@ import { type NextRequest } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 import { createPodSchema } from '@/lib/validations/pods';
 import { apiError, apiSuccess } from '@/lib/utils/api-response';
+import type { SavingsPod } from '@/types/database';
 
 /**
  * PATCH /api/pods/:id
@@ -28,7 +29,7 @@ export async function PATCH(
     return apiError('VALIDATION_ERROR', 'Invalid pod data.', parsed.error.flatten());
   }
 
-  const updatePayload: Record<string, unknown> = {};
+  const updatePayload: Partial<Omit<SavingsPod, 'id' | 'user_id'>> = {};
   if (parsed.data.name !== undefined) updatePayload.name = parsed.data.name;
   if (parsed.data.targetAmount !== undefined) updatePayload.target_amount = parsed.data.targetAmount;
   if (parsed.data.color !== undefined) updatePayload.color = parsed.data.color;

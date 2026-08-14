@@ -18,8 +18,11 @@ export type ApiErrorCode =
   | 'VALIDATION_ERROR'
   | 'TIER_LIMIT_REACHED'
   | 'BROKER_SYNC_ERROR'
+  | 'PAYMENT_ERROR'
   | 'INTERNAL_ERROR'
-  | 'RATE_LIMITED';
+  | 'RATE_LIMITED'
+  | 'KYC_REQUIRED'
+  | 'LIMIT_EXCEEDED';
 
 const STATUS_BY_CODE: Record<ApiErrorCode, number> = {
   UNAUTHORIZED: 401,
@@ -28,8 +31,11 @@ const STATUS_BY_CODE: Record<ApiErrorCode, number> = {
   VALIDATION_ERROR: 422,
   TIER_LIMIT_REACHED: 402,
   BROKER_SYNC_ERROR: 502,
+  PAYMENT_ERROR: 502,
   INTERNAL_ERROR: 500,
   RATE_LIMITED: 429,
+  KYC_REQUIRED: 403,
+  LIMIT_EXCEEDED: 422,
 };
 
 export function apiError(

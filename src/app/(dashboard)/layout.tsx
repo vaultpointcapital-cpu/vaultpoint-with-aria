@@ -1,6 +1,7 @@
 import { redirect } from 'next/navigation';
 import { createClient } from '@/lib/supabase/server';
 import { DashboardNav } from '@/components/layout/dashboard-nav';
+import { SessionTracker } from '@/components/analytics/session-tracker';
 
 /**
  * Layout for every route under (dashboard)/. Runs the auth check
@@ -28,6 +29,7 @@ export default async function DashboardLayout({
 
   return (
     <div className="flex min-h-screen flex-col bg-background">
+      <SessionTracker />
       <DashboardNav
         userName={profile?.full_name ?? null}
         tier={profile?.subscription_tier ?? 'free'}

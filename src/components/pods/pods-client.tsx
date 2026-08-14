@@ -1,12 +1,13 @@
 'use client';
 
 import { useState } from 'react';
-import { Target } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { PodCard } from '@/components/pods/pod-card';
 import { CreatePodDialog } from '@/components/pods/create-pod-dialog';
 import { PodDetailDialog } from '@/components/pods/pod-detail-dialog';
+import { EmptyPodsIllustration } from '@/components/pods/empty-pods-illustration';
 import { canCreateAnotherPod } from '@/lib/validations/pods';
+import { trackEvent } from '@/lib/analytics/track';
 import type { SavingsPod, SubscriptionTier } from '@/types/database';
 
 interface PodsClientProps {
@@ -24,6 +25,12 @@ export function PodsClient({ initialPods, subscriptionTier }: PodsClientProps) {
 
   function handleCreated(pod: SavingsPod) {
     setPods((prev) => [pod, ...prev]);
+    trackEvent('pod_created', {
+      tier: subscriptionTier,
+      hasDeadline: pod.deadline !== null,
+      fundingReminder: pod.funding_reminder,
+      isFirstPod: pods.length === 0,
+    });
   }
 
   function handleContributed(podId: string, newCurrentAmount: number) {
@@ -35,12 +42,10 @@ export function PodsClient({ initialPods, subscriptionTier }: PodsClientProps) {
   if (pods.length === 0) {
     return (
       <div className="flex min-h-[70vh] flex-col items-center justify-center gap-6 p-6 text-center">
-        <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-accent/10">
-          <Target className="h-7 w-7 text-accent" />
-        </div>
+        <EmptyPodsIllustration />
         <div>
           <h2 className="font-display text-xl font-semibold text-text-primary">
-            Start your first Savings Pod
+            No pods yet — start one in 30 seconds
           </h2>
           <p className="mx-auto mt-2 max-w-sm text-sm text-text-secondary">
             Set a target, pick a color, and start contributing whenever you like. We&apos;ll

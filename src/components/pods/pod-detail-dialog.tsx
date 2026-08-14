@@ -16,8 +16,7 @@ import {
   DialogTitle,
   DialogDescription,
 } from '@/components/ui/dialog';
-import { formatCurrency } from '@/lib/utils/cn';
-import { calculatePodProgress } from '@/lib/utils/financial';
+import { formatCurrency, calculateProgressPct } from '@/lib/utils/cn';
 import type { SavingsPod } from '@/types/database';
 
 interface PodDetailDialogProps {
@@ -42,7 +41,7 @@ export function PodDetailDialog({ pod, open, onOpenChange, onContributed }: PodD
   });
 
   const isComplete = pod.current_amount >= pod.target_amount;
-  const progress = calculatePodProgress(pod.current_amount, pod.target_amount);
+  const progress = calculateProgressPct(pod.current_amount, pod.target_amount);
   const deadlineDate = pod.deadline ? new Date(pod.deadline) : null;
 
   async function onSubmit(data: ContributeToPodInput) {

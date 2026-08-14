@@ -12,7 +12,7 @@ export default async function OnboardingPage() {
 
   const { data: profile } = await supabase
     .from('users')
-    .select('full_name, onboarding_completed')
+    .select('full_name, onboarding_completed, academy_student')
     .eq('id', authData.user.id)
     .single();
 
@@ -20,5 +20,10 @@ export default async function OnboardingPage() {
     redirect('/dashboard');
   }
 
-  return <OnboardingChecklist userName={profile?.full_name ?? null} />;
+  return (
+    <OnboardingChecklist
+      userName={profile?.full_name ?? null}
+      academyStudent={profile?.academy_student ?? false}
+    />
+  );
 }

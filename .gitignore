@@ -10,6 +10,12 @@
 /.next/
 /out/
 
+# serwist (generated service worker — built from src/app/sw.ts by next build)
+/public/sw.js
+/public/sw.js.map
+/public/swe-worker-*.js
+/public/swe-worker-*.js.map
+
 # production
 /build
 
@@ -34,3 +40,4 @@ next-env.d.ts
 .vscode/
 .idea/
 .claude/
+.env*

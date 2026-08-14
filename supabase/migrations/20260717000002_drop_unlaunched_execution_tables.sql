@@ -1,0 +1,42 @@
+-- ============================================================================
+-- VaultPoint — Drop unlaunched trade-execution/withdrawal tables
+-- ============================================================================
+-- public.autonomous_action_log, public.execution_authorizations, and
+-- public.withdrawal_authorizations exist in live but have no corresponding
+-- migration anywhere in this repo — they were created out-of-band (dashboard
+-- SQL editor or direct psql), bypassing the migration system entirely.
+--
+-- Compliance rationale: this platform's stated design is read-only broker
+-- aggregation — "the platform never trades," per the is_read_only comment
+-- already present on broker_connections in 20260617000000_initial_schema.sql
+-- — and an explicit instruction earlier in this project's history to build
+-- nothing toward trade execution or withdrawals. These three tables are the
+-- opposite of that: execution_authorizations encodes real autonomous-trading
+-- risk parameters (min_confluence_score, max_risk_pct_per_trade,
+-- daily_loss_circuit_breaker_pct), withdrawal_authorizations encodes
+-- automated withdrawal triggers (auto_withdraw_enabled, schedule_cron,
+-- otp_confirmed_at), and autonomous_action_log is the corresponding audit
+-- trail (action_type in trade_execute/withdrawal/deposit). None of this has
+-- a code path anywhere in this repo — no route, no service, nothing reads
+-- or writes these tables. They are unlaunched, unreferenced infrastructure
+-- for functionality this project has explicitly decided not to build.
+--
+-- Verified safe to drop before writing this migration:
+--   - Row counts: 0 for all three (checked directly against live).
+--   - No foreign key from any other table references any of these three
+--     (checked the full live schema dump for
+--     "REFERENCES public.<table>" pointing at any of them — no matches).
+--   - No triggers, no views, no indexes beyond each table's own primary key.
+--   - autonomous_action_log.authorization_id is a plain uuid column with
+--     no enforced FK to execution_authorizations — an unenforced reference,
+--     not a real dependency between the three tables themselves either.
+--
+-- Doubly reversible: the rollback file recreates these tables from the
+-- exact live DDL captured during the reconciliation's schema dump, and the
+-- pre-surgery full pg_dump backup (schema + data) is a second, independent
+-- way to restore them if this file's rollback is ever insufficient.
+-- ============================================================================
+
+drop table if exists public.autonomous_action_log;
+drop table if exists public.execution_authorizations;
+drop table if exists public.withdrawal_authorizations;

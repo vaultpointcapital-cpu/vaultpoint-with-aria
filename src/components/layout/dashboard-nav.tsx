@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
-import { LayoutGrid, TrendingUp, Target, Bell, Settings } from 'lucide-react';
+import { LayoutGrid, TrendingUp, Target, Bell, Link2, Settings, Radar, Wallet } from 'lucide-react';
 import { createClient } from '@/lib/supabase/client';
 import { cn } from '@/lib/utils/cn';
 import type { SubscriptionTier } from '@/types/database';
@@ -10,8 +10,12 @@ import type { SubscriptionTier } from '@/types/database';
 const NAV_ITEMS = [
   { href: '/dashboard', label: 'Portfolio', icon: LayoutGrid },
   { href: '/dashboard/markets', label: 'Markets', icon: TrendingUp },
+  { href: '/dashboard/brokers', label: 'Brokers', icon: Link2 },
+  { href: '/dashboard/signals', label: 'Signals', icon: Radar },
   { href: '/dashboard/pods', label: 'Savings Pods', icon: Target },
+  { href: '/dashboard/wallet', label: 'Wallet', icon: Wallet },
   { href: '/dashboard/alerts', label: 'Alerts', icon: Bell },
+  { href: '/dashboard/settings', label: 'Settings', icon: Settings },
 ];
 
 export function DashboardNav({
@@ -53,7 +57,7 @@ export function DashboardNav({
             className={cn(
               'border-b-2 px-4 py-3.5 text-sm font-medium transition-colors',
               isActive
-                ? 'border-accent text-accent'
+                ? 'border-accent text-accent-light'
                 : 'border-transparent text-text-secondary hover:text-text-primary'
             )}
           >
@@ -67,7 +71,7 @@ export function DashboardNav({
         <button
           onClick={handleLogout}
           title="Log out"
-          className="flex h-8 w-8 items-center justify-center rounded-full bg-gradient-to-br from-accent to-info text-xs font-semibold text-white"
+          className="flex h-10 w-10 items-center justify-center rounded-full bg-gradient-to-br from-accent to-info text-xs font-semibold text-white"
         >
           {initials}
         </button>
